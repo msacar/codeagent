@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codeagent"
+version = "0.1.0"
+description = "Tree-sitter powered, incremental code RAG indexer with CocoIndex + pgvector."
+requires-python = ">=3.11"
+dependencies = [
+  "cocoindex[embeddings]>=0.1.75",
+  "python-dotenv>=1.0.1",
+  "psycopg[binary,pool]>=3.2",
+  "pgvector>=0.4.1",
+  "tree-sitter>=0.24.0",
+  "tree-sitter-language-pack>=0.1.13",
+  "grep-ast>=0.3.6",
+  "pygments>=2.18.0",
+  "watchfiles>=0.22.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codeagent*"]
+
+[tool.setuptools.package-data]
+codeagent = [
+  "queries/tree-sitter-language-pack/*.scm",
+  "queries/tree-sitter-languages/*.scm",
+]
