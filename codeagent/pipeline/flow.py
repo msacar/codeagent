@@ -1,14 +1,16 @@
-from __future__ import annotations
 import os
 from dotenv import load_dotenv
 import cocoindex
+from numpy.typing import NDArray
+import numpy as np
+from cocoindex import DataSlice
 
 from .ops_parse import parse_file_to_symbols
 from .ops_chunks import symbols_to_chunks
 
 
 @cocoindex.transform_flow()
-def chunk_text_to_embedding(text: cocoindex.DataSlice[str]):
+def chunk_text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"
