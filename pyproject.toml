@@ -19,8 +19,7 @@ dependencies = [
   "watchfiles>=0.22.0",
 ]
 
-[project.scripts]
-codeagent = "codeagent.cli:main"
+
 
 [tool.setuptools]
 include-package-data = true
