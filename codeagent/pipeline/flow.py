@@ -34,9 +34,9 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
     out = data_scope.add_collector()
 
     with data_scope["files"].row() as f:
-        f["symbols"] = cocoindex.ops.call(parse_file_to_symbols,
-                                          filename=f["filename"], path=f["path"])
-        f["chunks"] = cocoindex.ops.call(symbols_to_chunks, f, f["symbols"])
+        # Call custom ops directly with DataSlice arguments (per CocoIndex pattern).
+        f["symbols"] = parse_file_to_symbols(filename=f["filename"], path=f["path"])
+        f["chunks"] = symbols_to_chunks(path=f["path"], filename=f["filename"], syms=f["symbols"])
         with f["chunks"].row() as ch:
             ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
             out.collect(
@@ -64,3 +64,5 @@ def run_index():
     load_dotenv()
     cocoindex.init()
     stats = build_index.update()
+    print("Updated index:", stats)
+

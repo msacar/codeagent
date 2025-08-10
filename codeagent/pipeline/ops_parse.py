@@ -5,15 +5,15 @@ from ..codesitter.parser import parse_defs_and_refs
 
 
 @cocoindex.op.function()
-class parse_file_to_symbols:
+def parse_file_to_symbols(filename: str, path: str) -> dict[str, object]:
     """
     Parse a single file to SymbolDef[] and RefTag[] using Tree-sitter queries.
+    Returns a dict with two lists: {"defs": [...], "refs": [...]}.
     """
-    def __call__(self, filename: str, path: str) -> dict:
-        rel = os.path.relpath(path, start=os.getcwd())
-        defs, refs = parse_defs_and_refs(path, rel)
-        return {
-            "defs": [d.__dict__ for d in defs],
-            "refs": [r.__dict__ for r in refs],
-        }
+    rel = os.path.relpath(path, start=os.getcwd())
+    defs, refs = parse_defs_and_refs(path, rel)
+    return {
+        "defs": [d.__dict__ for d in defs],
+        "refs": [r.__dict__ for r in refs],
+    }
 
