@@ -3,7 +3,7 @@ Generic Tree-sitter capture walker.
 Runs {lang}-tags.scm for TS/JS/Python and returns SymbolDef[] + RefTag[].
 Add new languages by dropping a tags.scm; no code change required.
 """
-from __future__ import annotations
+from typing import Tuple
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 import os
@@ -11,6 +11,7 @@ from pygments.lexers import guess_lexer_for_filename
 from pygments.token import Token
 
 from .tags_loader import load_query_text, get_lang_and_parser
+from grep_ast.tsl import USING_TSL_PACK
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,27 @@ def _container_name(lang: str, def_node, code_b: bytes) -> Optional[str]:
     return None
 
 
+def parse_defs_and_refs_from_text(filename: str, rel_path: str, code_s: str) -> Tuple[list[SymbolDef], list[RefTag]]:
+    """
+    Parse directly from in-memory text (CocoIndex LocalFile provides filename+content).
+    """
+    lang = _filename_to_lang(filename)
+    if not lang:
+        return [], []
+    language, parser = get_lang_and_parser(lang)
+    qsrc = load_query_text(lang)
+    if not qsrc:
+        return [], []
+
+    code_b = code_s.encode("utf-8", "ignore")
+    tree = parser.parse(code_b)
+    query = language.query(qsrc)
+
+    captures = query.captures(tree.root_node)
+    # delegate to the same materialization logic by simulating a “path”
+    return _materialize_defs_refs(lang, rel_path, filename, code_b, code_s, captures)
+
+
 def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List[RefTag]]:
     lang = _filename_to_lang(path)
     if not lang:
@@ -129,6 +151,16 @@ def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List
     tree = parser.parse(code_b)
     query = language.query(qsrc)
     captures = query.captures(tree.root_node)
+    return _materialize_defs_refs(lang, rel_path, path, code_b, code_s, captures)
+
+
+def _materialize_defs_refs(lang: str, rel_path: str, path: str, code_b: bytes, code_s: str, captures):
+    # (existing logic moved here unchanged)
+    def_nodes: dict[tuple[int, int], dict] = {}
+    name_nodes: list[tuple[object, str]] = []
+    doc_nodes: list[object] = []
+    refs: list[RefTag] = []
+    saw_def, saw_ref = False, False
 
     def_nodes: dict[tuple[int, int], dict] = {}
     name_nodes: list[tuple[object, str]] = []
@@ -183,7 +215,7 @@ def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List
         except Exception:
             pass
 
-    defs: List[SymbolDef] = []
+    defs: list[SymbolDef] = []
     for (lo, hi), info in def_nodes.items():
         node = info["node"]
         raw_cap = info["cap"]

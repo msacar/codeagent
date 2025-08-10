@@ -1,11 +1,12 @@
-from __future__ import annotations
 import os
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Optional
 import cocoindex
+import json
+
 
 from ..codesitter.spans import file_sha, slice_body, stable_id
-
+from .ops_parse import SymbolsResult
 
 @dataclass(frozen=True)
 class Chunk:
@@ -26,24 +27,32 @@ class Chunk:
     text: str
 
 
+
 @cocoindex.op.function()
-def symbols_to_chunks(path: str, filename: str, syms: Dict[str, Any]) -> List[Dict[str, Any]]:
+def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
     """
     Convert parsed defs/refs for a file to a list of chunks.
     Inputs:
-      - path: absolute file path
+      - syms: JSON string {"defs": [...], "refs": [...]}
       - filename: relative filename (from LocalFile)
-      - syms: {"defs": [...], "refs": [...]}
+      - content: file content (text)
     """
-    rel = os.path.relpath(path, start=os.getcwd())
-    code_b = open(path, "rb").read()
-    code_s = code_b.decode("utf-8", "ignore")
+    # `filename` from LocalFile is relative to the source root; rebuild abs path for metadata.
+    root_dir = os.getenv("CODEAGENT_ROOT", os.getcwd())
+    abs_path = os.path.join(root_dir, filename)
+
+    rel = filename
+    # Ensure content is str
+    code_s = content or ""
+    code_b = code_s.encode("utf-8", "ignore")
     sha = file_sha(code_b)
-    defs = syms.get("defs", [])
-    refs = syms.get("refs", [])
+    data = json.loads(syms or "{}")
+    defs = data.get("defs", [])
+    refs = data.get("refs", [])
+
     deps = sorted({r["name"] for r in refs})
 
-    out: List[Dict[str, Any]] = []
+    out: List[Chunk] = []
     for d in defs:
         pad = 12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
         sline, eline, body = slice_body(code_s, d["start_line"], d["end_line"], pad_after=pad)
@@ -53,7 +62,7 @@ def symbols_to_chunks(path: str, filename: str, syms: Dict[str, Any]) -> List[Di
         chunk = Chunk(
             id=cid,
             file=rel,
-            abs_file=path,
+            abs_file=abs_path,
             lang=d["lang"],
             symbol_kind=d["symbol_kind"],
             name=d["name"],
@@ -67,5 +76,5 @@ def symbols_to_chunks(path: str, filename: str, syms: Dict[str, Any]) -> List[Di
             sha=sha,
             text=text,
         )
-        out.append(chunk.__dict__)
+        out.append(chunk)  # return dataclass instances (Struct rows)
     return out
