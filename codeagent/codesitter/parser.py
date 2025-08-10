@@ -124,16 +124,23 @@ def parse_defs_and_refs_from_text(filename: str, rel_path: str, code_s: str) -> 
         return [], []
     language, parser = get_lang_and_parser(lang)
     qsrc = load_query_text(lang)
-    if not qsrc:
+    if not qsrc or not qsrc.strip():
+        print(f"[codeagent] WARNING: no tags.scm for lang={lang} (file={filename})")
         return [], []
 
     code_b = code_s.encode("utf-8", "ignore")
     tree = parser.parse(code_b)
     query = language.query(qsrc)
-
     captures = query.captures(tree.root_node)
-    # delegate to the same materialization logic by simulating a “path”
-    return _materialize_defs_refs(lang, rel_path, filename, code_b, code_s, captures)
+    # Normalize to a flat list of (node, tag) like aider:
+    if USING_TSL_PACK:
+        all_caps = []
+        for tag, nodes in captures.items():
+            all_caps.extend((node, tag) for node in nodes)
+    else:
+        all_caps = captures
+
+    return _materialize_defs_refs(lang, rel_path, filename, code_b, code_s, all_caps)
 
 
 def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List[RefTag]]:
@@ -143,7 +150,8 @@ def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List
 
     language, parser = get_lang_and_parser(lang)
     qsrc = load_query_text(lang)
-    if not qsrc:
+    if not qsrc or not qsrc.strip():
+        print(f"[codeagent] WARNING: no tags.scm for lang={lang} (file={path})")
         return [], []
 
     code_b = open(path, "rb").read()
@@ -151,8 +159,15 @@ def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List
     tree = parser.parse(code_b)
     query = language.query(qsrc)
     captures = query.captures(tree.root_node)
-    return _materialize_defs_refs(lang, rel_path, path, code_b, code_s, captures)
 
+    if USING_TSL_PACK:
+        all_caps = []
+        for tag, nodes in captures.items():
+            all_caps.extend((node, tag) for node in nodes)
+    else:
+        all_caps = captures
+
+    return _materialize_defs_refs(lang, rel_path, path, code_b, code_s, all_caps)
 
 def _materialize_defs_refs(lang: str, rel_path: str, path: str, code_b: bytes, code_s: str, captures):
     # (existing logic moved here unchanged)

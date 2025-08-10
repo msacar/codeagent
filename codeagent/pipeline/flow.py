@@ -27,7 +27,7 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
             included_patterns=["**/*.ts","**/*.tsx","**/*.js","**/*.jsx","**/*.py"],
             excluded_patterns=[
                 "**/node_modules/**","**/dist/**","**/build/**",
-                "**/.git/**","**/.idea/**","**/__pycache__/**",
+                "**/.git/**","**/.idea/**","**/__pycache__/**","**/__tests__/**"
             ],
         )
     )

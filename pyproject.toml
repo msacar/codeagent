@@ -19,6 +19,9 @@ dependencies = [
   "watchfiles>=0.22.0",
 ]
 
+[project.scripts]
+codeagent = "codeagent.cli:main"
+
 [tool.setuptools]
 include-package-data = true
 
@@ -31,3 +34,7 @@ codeagent = [
   "queries/tree-sitter-language-pack/*.scm",
   "queries/tree-sitter-languages/*.scm",
 ]
+
+[project.scripts]
+codeagent = "codeagent.cli:main"
+codeagent-insight = "main:main"
