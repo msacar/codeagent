@@ -1,6 +1,6 @@
 # CodeAgent - Tree-sitter Code Indexing with CocoInsight
 
-A Tree-sitter powered, incremental code RAG indexer with CocoIndex + pgvector, now with **CocoInsight** integration for live pipeline monitoring.
+A Tree-sitter powered, incremental code RAG indexer with CocoIndex + pgvector, now with **CocoInsight** integration for live pipeline monitoring and **Aider-style PageRank** for code importance ranking.
 
 ## Features
 
@@ -10,6 +10,8 @@ A Tree-sitter powered, incremental code RAG indexer with CocoIndex + pgvector, n
 - 🔍 Hybrid search (lexical + vector) with pgvector
 - 🚀 Support for TypeScript, JavaScript, Python
 - 👁️ Real-time visualization of indexing flow
+- 🎯 **PageRank-based code importance ranking** (Aider-style)
+- 🗺️ **Repository map generation** showing key code elements
 
 ## Setup
 
@@ -86,6 +88,44 @@ Auto-reindex on file changes:
 make watch
 ```
 
+### PageRank Analysis
+
+Compute PageRank scores to identify the most important files and symbols:
+
+```bash
+# Compute and display PageRank results
+codeagent pagerank --root /path/to/repo
+
+# Show top 20 files and symbols
+codeagent pagerank --top-n 20
+
+# Save PageRank results for later use
+codeagent pagerank --save-ranks ranks.json
+
+# Load pre-computed ranks
+codeagent pagerank --load-ranks ranks.json
+```
+
+### Repository Map
+
+Generate an Aider-style repository map showing key code elements:
+
+```bash
+# Generate repository map
+codeagent repomap --root /path/to/repo
+
+# Focus on specific files
+codeagent repomap --focus-files src/main.py src/utils.py
+
+# Control map size
+codeagent repomap --max-tokens 3000
+```
+
+The repository map uses PageRank to identify and display:
+- Top files by importance
+- Key symbols with contextual code snippets
+- Dependencies between code elements
+
 ## Available Commands
 
 ```bash
@@ -97,6 +137,13 @@ make insight     # Start CocoInsight server
 make watch       # Watch for changes and auto-reindex
 make clean       # Clean cached data
 make test        # Run tests
+
+# CLI commands
+codeagent index           # Run indexing pipeline
+codeagent query --q TEXT  # Search indexed code
+codeagent pagerank        # Compute PageRank scores
+codeagent repomap         # Generate repository map
+codeagent watch           # Watch mode for auto-indexing
 ```
 
 ## Architecture
@@ -105,11 +152,22 @@ The pipeline follows this flow:
 
 1. **Source Files** → Tree-sitter parsing
 2. **Symbols** → Extract definitions and references
-3. **Chunks** → Create semantic code units
-4. **Embeddings** → Generate vector representations
-5. **Storage** → Store in PostgreSQL with pgvector
+3. **PageRank** → Build dependency graph and compute importance scores
+4. **Chunks** → Create semantic code units with importance ranks
+5. **Embeddings** → Generate vector representations
+6. **Storage** → Store in PostgreSQL with pgvector
 
 CocoInsight provides real-time visibility into each step of this pipeline.
+
+### PageRank Implementation (Aider-style)
+
+The PageRank implementation follows Aider's approach:
+
+- **Definition/Reference Tracking**: Parses code using Tree-sitter to extract symbol definitions and references
+- **Dependency Graph**: Builds a directed graph where edges go from files that reference symbols to files that define them
+- **Edge Weighting**: Uses heuristics like case style matching (camelCase vs snake_case) and symbol frequency
+- **PageRank Calculation**: Runs the PageRank algorithm to identify important files and symbols
+- **Repository Map**: Generates contextual code snippets for the most important elements
 
 ## Project Structure
 
@@ -119,9 +177,13 @@ codeagent/
 ├── pipeline/           # CocoIndex pipeline operations
 │   ├── flow.py        # Main pipeline definition
 │   ├── ops_parse.py   # Parsing operations
-│   └── ops_chunks.py  # Chunking operations
+│   ├── ops_chunks.py  # Chunking operations
+│   ├── ops_pagerank.py # PageRank operations
+│   └── batch_pagerank.py # Batch PageRank processor
 ├── search/            # Retrieval logic
-└── queries/           # Tree-sitter query files
+├── queries/           # Tree-sitter query files
+├── pagerank.py        # Core PageRank implementation
+└── repomap.py         # Repository map generator
 ```
 
 ## Notes

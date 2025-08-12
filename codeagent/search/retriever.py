@@ -44,7 +44,20 @@ def search(pool: ConnectionPool, query: str, top_k: int = 8, lang: str | None = 
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
-    return [dict(
-        id=r[0], file=r[1], name=r[2], lang=r[3], symbol_kind=r[4], container=r[5],
-        header=r[6], body=r[7], start=r[8], end=r[9], score=r[10], rank=r[11]
-    ) for r in rows]
+    return [
+        dict(
+            id=r[0],
+            file=r[1],
+            name=r[2],
+            lang=r[3],
+            symbol_kind=r[4],
+            container=r[5],
+            header=r[6],
+            body=r[7],
+            start=r[8],
+            end=r[9],
+            score=r[10],
+            rank=r[11],
+        )
+        for r in rows
+    ]

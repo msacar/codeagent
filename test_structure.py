@@ -13,18 +13,21 @@ print(f"Python path: {sys.path[0]}")
 try:
     # Test direct imports from root
     import pipeline.flow
+
     print("✓ Can import pipeline.flow from root")
 except ImportError as e:
     print(f"✗ Cannot import pipeline.flow from root: {e}")
 
 try:
     import search.retriever
+
     print("✓ Can import search.retriever from root")
 except ImportError as e:
     print(f"✗ Cannot import search.retriever from root: {e}")
 
 try:
     import codesitter.parser
+
     print("✓ Can import codesitter.parser from root")
 except ImportError as e:
     print(f"✗ Cannot import codesitter.parser from root: {e}")
@@ -32,6 +35,7 @@ except ImportError as e:
 try:
     # Test as package
     from codeagent import cli
+
     print("✓ Can import codeagent.cli")
 except ImportError as e:
     print(f"✗ Cannot import codeagent.cli: {e}")

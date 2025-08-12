@@ -1,12 +1,12 @@
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 import cocoindex
 import json
 
 
 from ..codesitter.spans import file_sha, slice_body, stable_id
-from .ops_parse import SymbolsResult
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -25,7 +25,6 @@ class Chunk:
     rank: float
     sha: str
     text: str
-
 
 
 @cocoindex.op.function()
@@ -52,13 +51,33 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
 
     deps = sorted({r["name"] for r in refs})
 
+    # Get PageRank scores if available
+    try:
+        from .batch_pagerank import get_global_ranker
+
+        ranker = get_global_ranker()
+        file_rank = ranker.get_file_rank(rel)
+    except Exception:
+        # Fallback if PageRank not computed
+        file_rank = 0.0
+        ranker = None
+
     out: List[Chunk] = []
     for d in defs:
         pad = 12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
-        sline, eline, body = slice_body(code_s, d["start_line"], d["end_line"], pad_after=pad)
+        sline, eline, body = slice_body(
+            code_s, d["start_line"], d["end_line"], pad_after=pad
+        )
         header = f"{rel}:L{sline}  {d['symbol_kind']} {d['name']}".strip()
         cid = stable_id(rel, d["name"], d["symbol_kind"], sline, eline)
         text = header + "\n" + body
+
+        # Get symbol-specific rank if available
+        if ranker:
+            symbol_rank = ranker.get_symbol_rank(rel, d["name"])
+        else:
+            symbol_rank = file_rank
+
         chunk = Chunk(
             id=cid,
             file=rel,
@@ -72,7 +91,7 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
             header=header,
             body=((d.get("doc") + "\n") if d.get("doc") else "") + body,
             deps=deps,
-            rank=0.0,
+            rank=symbol_rank,  # Use computed PageRank
             sha=sha,
             text=text,
         )

@@ -1,6 +1,7 @@
 # main.py
 from dotenv import load_dotenv
 import cocoindex  # just to ensure it's importable
+
 # Import the flow so CocoIndex discovers it on import:
 from codeagent.pipeline.flow import build_index  # noqa: F401
 
