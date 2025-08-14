@@ -7,9 +7,9 @@ with contextual code snippets.
 import os
 from typing import List, Tuple, Optional
 from pathlib import Path
-from ..codesitter.parser import parse_defs_and_refs
-from ..codesitter.spans import slice_body
-from .batch_pagerank import BatchPageRankProcessor
+from .codesitter.parser import parse_defs_and_refs
+from .codesitter.spans import slice_body
+from .pipeline.batch_pagerank import BatchPageRankProcessor
 
 
 class RepoMap:
@@ -18,10 +18,18 @@ class RepoMap:
     Uses PageRank to identify key files and symbols.
     """
 
-    def __init__(self, root_dir: Optional[str] = None, max_tokens: int = 2000):
+    def __init__(
+        self,
+        root_dir: Optional[str] = None,
+        max_tokens: int = 2000,
+        include: Optional[List[str]] = None,
+        exclude: Optional[List[str]] = None,
+    ):
         self.root_dir = root_dir or os.getenv("CODEAGENT_ROOT", os.getcwd())
         self.max_tokens = max_tokens
         self.processor = BatchPageRankProcessor(self.root_dir)
+        self._include = include
+        self._exclude = exclude
 
     def generate(self, focus_files: Optional[List[str]] = None) -> str:
         """
@@ -33,8 +41,10 @@ class RepoMap:
         Returns:
             A formatted string showing the repository structure and key code
         """
-        # Process all files to compute PageRank
-        self.processor.process_directory()
+        # Process all files to compute PageRank (respect CLI filters if given)
+        self.processor.process_directory(
+            patterns=self._include, exclude_patterns=self._exclude
+        )
 
         # Get top files by PageRank
         top_files = self.processor.get_top_files(20)

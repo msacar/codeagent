@@ -107,6 +107,20 @@ class CodePageRank:
         elif symbol and symbol[0].isupper():  # Classes/Types (guard empty)
             weight *= 1.3
 
+        # --- Practical signal shaping for codebases with TypeScript/tests ---
+        # 1) Downweight edges *to* pure type declaration files and @types bundles.
+        #    .d.ts are type-only; they accumulate many references by design.
+        if definer.endswith(".d.ts") or "/@types/" in definer:
+            weight *= 0.25
+
+        # 2) Downweight edges *from* tests to source to avoid tests dominating.
+        if (
+            "/__tests__/" in referencer
+            or ".test." in referencer
+            or ".spec." in referencer
+        ):
+            weight *= 0.5
+
         return weight
 
     def _is_camel_case(self, name: str) -> bool:

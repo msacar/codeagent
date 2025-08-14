@@ -9,21 +9,52 @@ from .pipeline.flow import run_index
 from .search.retriever import search
 from .pipeline.batch_pagerank import BatchPageRankProcessor
 from .repomap import RepoMap
+from .context import ContextMapBuilder
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["index", "query", "watch", "pagerank", "repomap"])
+    p.add_argument(
+        "cmd", choices=["index", "query", "watch", "pagerank", "repomap", "context"]
+    )
     p.add_argument("--root", default=".")
     p.add_argument("--q", help="query text")
     p.add_argument("--k", type=int, default=8)
     p.add_argument("--lang", default=None)
+    p.add_argument(
+        "--include", nargs="+", help="Glob patterns to include (e.g. **/*.ts **/*.py)"
+    )
+    p.add_argument(
+        "--exclude",
+        nargs="+",
+        help="Glob patterns to exclude (e.g. **/*.d.ts **/@types/** **/__tests__/**)",
+    )
     p.add_argument("--top-n", type=int, default=10, help="Number of top items to show")
     p.add_argument("--save-ranks", help="Save PageRank results to JSON file")
     p.add_argument("--load-ranks", help="Load PageRank results from JSON file")
     p.add_argument("--focus-files", nargs="+", help="Files to focus on in repo map")
     p.add_argument(
         "--max-tokens", type=int, default=2000, help="Max tokens for repo map"
+    )
+    # Context-specific arguments
+    p.add_argument(
+        "--file",
+        dest="chat_files",
+        action="append",
+        default=[],
+        help="Seed PageRank with this file (repeatable)",
+    )
+    p.add_argument(
+        "--map-tokens",
+        type=int,
+        default=1000,
+        help="Approx token budget for context rendering (default: 1000)",
+    )
+    p.add_argument(
+        "--top-files",
+        type=int,
+        default=25,
+        help="Max files to include before token budget is applied",
     )
     args = p.parse_args()
 
@@ -58,7 +89,9 @@ def main():
             print(f"Loaded ranks from {args.load_ranks}")
         else:
             print("Computing PageRank for repository...")
-            processor.process_directory()
+            processor.process_directory(
+                patterns=args.include, exclude_patterns=args.exclude
+            )
             print("PageRank computation complete!")
 
         # Display top files
@@ -82,7 +115,12 @@ def main():
 
     elif args.cmd == "repomap":
         # Generate and display repository map
-        repo_map = RepoMap(args.root, max_tokens=args.max_tokens)
+        repo_map = RepoMap(
+            args.root,
+            max_tokens=args.max_tokens,
+            include=args.include,
+            exclude=args.exclude,
+        )
         print("Generating repository map...")
 
         map_content = repo_map.generate(focus_files=args.focus_files)
@@ -94,6 +132,57 @@ def main():
         print("\n📈 Map Statistics:")
         print(f"  Lines: {len(lines)}")
         print(f"  Approx tokens: {tokens}")
+
+    elif args.cmd == "context":
+        # Build chat-aware context map using personalized PageRank
+        import sys
+
+        prompt = args.q or ""
+        if not prompt and not args.chat_files:
+            print(
+                "Provide --q PROMPT and/or --file FILE to seed the context map.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        builder = ContextMapBuilder(
+            args.root, include=args.include, exclude=args.exclude
+        )
+
+        print("Building context map...")
+        context = builder.build_context_map(
+            prompt=prompt,
+            chat_files=args.chat_files,
+            map_tokens=args.map_tokens,
+            top_files=args.top_files,
+        )
+
+        # Display the context map
+        print(f"\n📌 Context map for: {prompt!r}")
+        print("=" * 60)
+
+        for i, item in enumerate(context, 1):
+            print(f"{i:2d}. {item['file']:45} [rank: {item['rank']:.6f}]")
+
+            for h in item.get("highlights", []):
+                # Compact: header then first line of body
+                print(f"    - {h['header']}")
+                if h["body"].strip():
+                    print(f"      {h['body']}")
+
+            if item.get("highlights"):
+                print()
+
+        # Show token usage
+        total_chars = sum(
+            len(item["file"])
+            + sum(len(h["header"]) + len(h["body"]) for h in item.get("highlights", []))
+            for item in context
+        )
+        approx_tokens = total_chars // 4
+        print("\n📊 Context Statistics:")
+        print(f"  Files included: {len(context)}")
+        print(f"  Approx tokens used: {approx_tokens}/{args.map_tokens}")
 
 
 if __name__ == "__main__":
