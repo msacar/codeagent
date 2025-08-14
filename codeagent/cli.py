@@ -82,12 +82,6 @@ def main():
         help="Seed PageRank with this file (repeatable)",
     )
     p.add_argument(
-        "--map-tokens",
-        type=int,
-        default=1000,
-        help="Approx token budget for context rendering (default: 1000)",
-    )
-    p.add_argument(
         "--top-files",
         type=int,
         default=25,
