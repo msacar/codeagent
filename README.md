@@ -59,6 +59,34 @@ make index
 # Or: python -c "from codeagent.pipeline.flow import run_index; run_index()"
 ```
 
+### Aider-style repo-map knobs
+
+You can tune the **lines-of-interest** condenser and token budget similar to Aider:
+
+```bash
+# Use a ~1000 token budget for each condensed symbol body (Aider default for repo map)
+codeagent index --map-tokens 1000
+
+# Adjust window padding around anchors and max lines per symbol
+codeagent index --loi-pre 2 --loi-post 12 --loi-max-lines 120
+
+# Highlight anchor lines in condensed code (purely visual)
+codeagent index --loi-hilite --loi-mark "▶"
+```
+
+All flags can also be set via env vars:
+
+```
+CODEAGENT_MAP_TOKENS=1000
+CODEAGENT_LOI_PRE=2
+CODEAGENT_LOI_POST=12
+CODEAGENT_LOI_MAX_LINES=120
+CODEAGENT_LOI_HILITE=1
+CODEAGENT_LOI_MARK=▶
+```
+
+> These knobs mirror Aider's approach of optimizing a repo map to a token budget and showing "lines of interest." See the Aider docs/blog for details.
+
 ### Live Monitoring with CocoInsight
 
 Start the CocoInsight server to monitor your pipeline in real-time:

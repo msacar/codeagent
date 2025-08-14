@@ -21,6 +21,43 @@ def main():
     p.add_argument("--q", help="query text")
     p.add_argument("--k", type=int, default=8)
     p.add_argument("--lang", default=None)
+
+    # Aider-style repo-map / condenser knobs
+    grp = p.add_argument_group("repo-map options (Aider-style knobs)")
+    grp.add_argument(
+        "--map-tokens",
+        type=int,
+        default=None,
+        help="Approx token budget for condensed bodies (similar to Aider's --map-tokens).",
+    )
+    grp.add_argument(
+        "--loi-pre",
+        type=int,
+        default=None,
+        help="Lines of context before each anchor (default 2).",
+    )
+    grp.add_argument(
+        "--loi-post",
+        type=int,
+        default=None,
+        help="Lines of context after each anchor (default 12 for funcs/methods, 6 otherwise).",
+    )
+    grp.add_argument(
+        "--loi-max-lines",
+        type=int,
+        default=None,
+        help="Max lines per condensed body (guardrail if no token budget).",
+    )
+    grp.add_argument(
+        "--loi-hilite",
+        action="store_true",
+        help="Highlight anchor lines in condensed bodies.",
+    )
+    grp.add_argument(
+        "--loi-mark",
+        default=None,
+        help="Marker string to prefix highlighted anchor lines (default '▶').",
+    )
     p.add_argument(
         "--include", nargs="+", help="Glob patterns to include (e.g. **/*.ts **/*.py)"
     )
@@ -60,6 +97,20 @@ def main():
 
     os.environ.setdefault("CODEAGENT_ROOT", args.root)
     load_dotenv()
+
+    # Thread condenser settings via env so pipeline ops can read them
+    if args.map_tokens is not None:
+        os.environ["CODEAGENT_MAP_TOKENS"] = str(args.map_tokens)
+    if args.loi_pre is not None:
+        os.environ["CODEAGENT_LOI_PRE"] = str(args.loi_pre)
+    if args.loi_post is not None:
+        os.environ["CODEAGENT_LOI_POST"] = str(args.loi_post)
+    if args.loi_max_lines is not None:
+        os.environ["CODEAGENT_LOI_MAX_LINES"] = str(args.loi_max_lines)
+    if args.loi_hilite:
+        os.environ["CODEAGENT_LOI_HILITE"] = "1"
+    if args.loi_mark is not None:
+        os.environ["CODEAGENT_LOI_MARK"] = args.loi_mark
 
     if args.cmd == "index":
         run_index()

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List
 import cocoindex
 import json
+import re
 
 
 from ..codesitter.spans import file_sha, slice_body, stable_id
@@ -51,14 +52,6 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
     refs = data.get("refs", [])
 
     deps = sorted({r["name"] for r in refs})
-    # Gather reference line numbers for LOI selection (ignore faux refs: line == -1)
-    ref_lines = sorted(
-        {
-            int(r["line"])
-            for r in refs
-            if isinstance(r.get("line"), int) and r["line"] >= 0
-        }
-    )
 
     # Get PageRank scores if available
     try:
@@ -73,28 +66,65 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
 
     out: List[Chunk] = []
     for d in defs:
-        # Prefer condensed, Aider-style "lines of interest" within the def span.
-        # Fallback to contiguous slicing if nothing was selected.
-        loi_pad = 3
-        max_lines = (
-            80 if d["symbol_kind"] in ("function", "method", "constructor") else 60
+        # Default post padding by kind (to mimic Aider's emphasis on funcs/methods)
+        default_post = (
+            12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
         )
-        sline, eline, body = condense_symbol_body(
-            code_s=code_s,
-            def_start=d["start_line"],
-            def_end=d["end_line"],
-            ref_lines=ref_lines,
-            pad=loi_pad,
-            max_lines=max_lines,
-        )
-        if not body:
-            pad = 12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
-            sline, eline, body = slice_body(
-                code_s, d["start_line"], d["end_line"], pad_after=pad
-            )
 
-        header = f"{rel}:L{sline}  {d['symbol_kind']} {d['name']}".strip()
-        cid = stable_id(rel, d["name"], d["symbol_kind"], sline, eline)
+        # Aider-style LOI condenser knobs from env
+        pad_before = int(os.getenv("CODEAGENT_LOI_PRE", "2"))
+        pad_after = int(os.getenv("CODEAGENT_LOI_POST", str(default_post)))
+        max_lines_env = os.getenv("CODEAGENT_LOI_MAX_LINES")
+        max_lines = int(max_lines_env) if max_lines_env else 80
+        tokens_env = os.getenv("CODEAGENT_MAP_TOKENS")
+        token_budget = int(tokens_env) if tokens_env else None
+        hilite = os.getenv("CODEAGENT_LOI_HILITE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        mark = os.getenv("CODEAGENT_LOI_MARK", "▶")
+
+        # Build anchors: signature line + any lines inside the span referencing known identifiers
+        file_lines = code_s.splitlines()
+        span_start_1 = d["start_line"] + 1
+        span_end_1 = d["end_line"] + 1
+        anchors = {span_start_1}
+        if deps and span_start_1 <= span_end_1:
+            idents = [x for x in deps if x and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", x)]
+            if idents:
+                rx = re.compile(
+                    r"\b(" + "|".join(re.escape(x) for x in idents) + r")\b"
+                )
+                for L in range(span_start_1, span_end_1 + 1):
+                    line_txt = file_lines[L - 1] if L - 1 < len(file_lines) else ""
+                    if rx.search(line_txt):
+                        anchors.add(L)
+
+        s1, e1, condensed = condense_symbol_body(
+            file_lines,
+            span_start_1,
+            span_end_1,
+            sorted(anchors),
+            pad_before=pad_before,
+            pad_after=pad_after,
+            max_lines=max_lines,
+            token_budget=token_budget,
+            hilite_anchors=hilite,
+            mark=mark,
+        )
+
+        # Fallback to a simple tail pad if condenser produced nothing (very rare)
+        if not condensed:
+            _, _, condensed = slice_body(
+                code_s, d["start_line"], d["end_line"], pad_after=default_post
+            )
+            s1, e1 = span_start_1, span_end_1
+
+        header = f"{rel}:L{s1}  {d['symbol_kind']} {d['name']}".strip()
+        cid = stable_id(rel, d["name"], d["symbol_kind"], s1, e1)
+        body = ((d.get("doc") + "\n") if d.get("doc") else "") + condensed
         text = header + "\n" + body
 
         # Get symbol-specific rank if available
@@ -111,10 +141,10 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
             symbol_kind=d["symbol_kind"],
             name=d["name"],
             container=d.get("container"),
-            start_line=sline,
-            end_line=eline,
+            start_line=s1,
+            end_line=e1,
             header=header,
-            body=((d.get("doc") + "\n") if d.get("doc") else "") + body,
+            body=body,
             deps=deps,
             rank=symbol_rank,  # Use computed PageRank
             sha=sha,

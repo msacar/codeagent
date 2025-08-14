@@ -1,95 +1,104 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import Iterable, List, Tuple, Optional
 
-"""
-AST-aware condenser for "lines of interest" (LOIs), inspired by Aider's repo map.
-We anchor on the definition start line and any reference lines within the def span,
-expand each anchor by a small pad, merge overlaps, optionally cap total lines,
-and join windows with an ellipsis line. See Aider's discussion of "critical lines"
-in the repository map/blog posts.
-"""
+try:
+    import tiktoken  # type: ignore
+except Exception:  # pragma: no cover
+    tiktoken = None  # type: ignore
+
+
+def _estimate_tokens(text: str) -> int:
+    """
+    Rough token estimate. If tiktoken is available, use cl100k_base.
+    Otherwise, fall back to a simple chars/4 heuristic.
+    """
+    if not text:
+        return 0
+    if tiktoken is not None:
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    # Heuristic: 1 token ~= 4 chars
+    return max(1, len(text) // 4)
 
 
 def _merge_windows(windows: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     if not windows:
         return []
     windows.sort()
-    merged = [list(windows[0])]
-    for lo, hi in windows[1:]:
-        if lo <= merged[-1][1] + 1:
-            merged[-1][1] = max(merged[-1][1], hi)
+    merged = [windows[0]]
+    for s, e in windows[1:]:
+        ls, le = merged[-1]
+        if s <= le + 1:
+            merged[-1] = (ls, max(le, e))
         else:
-            merged.append([lo, hi])
-    return [(a, b) for a, b in merged]
-
-
-def _cap_windows(
-    windows: List[Tuple[int, int]], max_lines: int | None
-) -> List[Tuple[int, int]]:
-    if not max_lines or max_lines <= 0:
-        return windows
-    lengths = [hi - lo + 1 for lo, hi in windows]
-    total = sum(lengths)
-    if total <= max_lines:
-        return windows
-    # Greedily drop the smallest windows until within budget, preserving order of survivors.
-    indexed = list(enumerate(windows))
-    while total > max_lines and indexed:
-        # find smallest window
-        i_min, (lo_min, hi_min) = min(indexed, key=lambda kv: (kv[1][1] - kv[1][0] + 1))
-        total -= hi_min - lo_min + 1
-        indexed = [(i, w) for (i, w) in indexed if i != i_min]
-    # restore original order
-    indexed.sort(key=lambda kv: kv[0])
-    return [w for _, w in indexed]
-
-
-def _render_windows(
-    lines: List[str], windows: List[Tuple[int, int]]
-) -> Tuple[int, int, str]:
-    if not windows:
-        return 1, 0, ""  # empty
-    out: List[str] = []
-    first_line = windows[0][0] + 1  # 1-based
-    last_line = windows[-1][1] + 1  # 1-based (last included line)
-    for idx, (lo, hi) in enumerate(windows):
-        lo = max(0, min(lo, len(lines) - 1))
-        hi = max(0, min(hi, len(lines) - 1))
-        if idx > 0:
-            out.append("…")
-        out.extend(lines[lo : hi + 1])
-    return first_line, last_line, "\n".join(out)
+            merged.append((s, e))
+    return merged
 
 
 def condense_symbol_body(
-    code_s: str,
-    def_start: int,
-    def_end: int,
-    ref_lines: List[int],
-    pad: int = 3,
-    max_lines: int | None = 80,
+    code_lines: List[str],
+    start_line_1: int,
+    end_line_1: int,
+    anchor_lines_1: Iterable[int],
+    pad_before: int = 2,
+    pad_after: int = 8,
+    max_lines: Optional[int] = 80,
+    token_budget: Optional[int] = None,
+    hilite_anchors: bool = False,
+    mark: str = "▶",
 ) -> Tuple[int, int, str]:
     """
-    Build a condensed body for a symbol using LOIs:
-      - anchors: [def_start] + refs within [def_start, def_end]
-      - each anchor expands to [anchor-pad, anchor+pad] within the def span
-      - windows are merged and capped to max_lines
-    Returns (start_line_1based, end_line_1based, text).
+    Condense a symbol's body to "lines of interest" windows.
+    Returns (render_start_1, render_end_1, text) with 1-based line numbers.
     """
-    lines = code_s.splitlines()
-    lo_span = max(0, min(def_start, len(lines) - 1))
-    hi_span = max(0, min(max(def_end, def_start), len(lines) - 1))
+    n = len(code_lines)
+    lo0 = max(1, min(start_line_1, end_line_1))
+    hi0 = min(n, max(start_line_1, end_line_1))
 
-    anchors = [lo_span] + [ln for ln in ref_lines if lo_span <= ln <= hi_span]
-    anchors = sorted(set(a for a in anchors if 0 <= a < len(lines)))
-    if not anchors:
-        return lo_span + 1, hi_span + 1, ""
+    anchors = sorted({a for a in anchor_lines_1 if lo0 <= a <= hi0}) or [lo0]
 
-    windows = []
+    wins: List[Tuple[int, int]] = []
     for a in anchors:
-        lo = max(lo_span, a - pad)
-        hi = min(hi_span, a + pad)
-        windows.append((lo, hi))
-    windows = _merge_windows(windows)
-    windows = _cap_windows(windows, max_lines)
-    return _render_windows(lines, windows)
+        s = max(lo0, a - pad_before)
+        e = min(hi0, a + pad_after)
+        wins.append((s, e))
+    wins = _merge_windows(wins)
+
+    def render(wlist: List[Tuple[int, int]]) -> Tuple[int, int, str]:
+        out_lines: List[str] = []
+        cursor = wlist[0][0]
+        anchor_set = set(anchors)
+        for s, e in wlist:
+            if s > cursor:
+                out_lines.append("⋮")
+                cursor = s
+            for L in range(s, e + 1):
+                ln = code_lines[L - 1]
+                if hilite_anchors and L in anchor_set:
+                    out_lines.append(f"{mark} {ln}")
+                else:
+                    out_lines.append(ln)
+            cursor = e + 1
+        return (wlist[0][0], wlist[-1][1], "\n".join(out_lines))
+
+    if token_budget:
+        selected: List[Tuple[int, int]] = []
+        for w in wins:
+            trial = selected + [w]
+            _, _, txt = render(trial)
+            if _estimate_tokens(txt) <= token_budget or not selected:
+                selected = trial
+            else:
+                break
+        wins = selected or wins[:1]
+
+    if max_lines is not None:
+        _, _, txt = render(wins)
+        lines = txt.splitlines()
+        if len(lines) > max_lines:
+            return wins[0][0], wins[-1][1], "\n".join(lines[:max_lines] + ["⋮"])
+
+    return render(wins)
