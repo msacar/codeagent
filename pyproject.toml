@@ -18,7 +18,7 @@ dependencies = [
   "pygments>=2.18.0",
   "tiktoken>=0.7.0",
   "watchfiles>=0.22.0",
-  "networkx>=3.0",
+  "networkx>=3.2",
 ]
 
 

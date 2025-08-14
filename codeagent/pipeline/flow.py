@@ -4,6 +4,8 @@ import cocoindex
 
 from .ops_parse import parse_file_to_symbols
 from .ops_chunks import symbols_to_chunks
+from psycopg_pool import ConnectionPool
+from .pagerank_update import update_pagerank
 
 
 @cocoindex.transform_flow()
@@ -84,3 +86,12 @@ def run_index():
     build_index.setup(report_to_stdout=True)
     stats = build_index.update()
     print("Updated index:", stats)
+    # After chunks are written, compute & store PageRank like Aider
+    db_url = os.environ.get("COCOINDEX_DATABASE_URL")
+    if db_url:
+        try:
+            pool = ConnectionPool(db_url)
+            touched = update_pagerank(pool)
+            print(f"Updated PageRank on {touched} chunk rows.")
+        except Exception as e:
+            print("[WARN] PageRank update skipped:", e)

@@ -8,6 +8,7 @@ A Tree-sitter powered, incremental code RAG indexer with CocoIndex + pgvector, n
 - 🔄 Incremental indexing with CocoIndex
 - 📊 Live pipeline monitoring with CocoInsight
 - 🔍 Hybrid search (lexical + vector) with pgvector
+- 🧮 Aider-style PageRank over defs/refs (name-based), stored back into chunks
 - 🚀 Support for TypeScript, JavaScript, Python
 - 👁️ Real-time visualization of indexing flow
 - 🎯 **PageRank-based code importance ranking** (Aider-style)
@@ -57,6 +58,13 @@ Run the indexing pipeline:
 ```bash
 make index
 # Or: python -c "from codeagent.pipeline.flow import run_index; run_index()"
+```
+
+This will also compute and store **PageRank** for your repo (file-level, Aider-style name matching).
+You can print the top results:
+
+```bash
+codeagent pagerank --root $CODEAGENT_ROOT --top-n 50
 ```
 
 ### Aider-style repo-map knobs

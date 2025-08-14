@@ -7,7 +7,7 @@ from watchfiles import run_process
 
 from .pipeline.flow import run_index
 from .search.retriever import search
-from .pipeline.batch_pagerank import BatchPageRankProcessor
+from .pipeline.pagerank_update import top_files_and_symbols, update_pagerank
 from .repomap import RepoMap
 from .context import ContextMapBuilder
 
@@ -126,37 +126,25 @@ def main():
 
         run_process(args.root, target=_run)
     elif args.cmd == "pagerank":
-        # Compute and display PageRank results
-        processor = BatchPageRankProcessor(args.root)
-
-        if args.load_ranks:
-            processor.load_ranks(args.load_ranks)
-            print(f"Loaded ranks from {args.load_ranks}")
-        else:
-            print("Computing PageRank for repository...")
-            processor.process_directory(
-                patterns=args.include, exclude_patterns=args.exclude
-            )
-            print("PageRank computation complete!")
-
-        # Display top files
-        print(f"\n📊 Top {args.top_n} Files by PageRank:")
-        print("=" * 60)
-        for i, (file, rank) in enumerate(processor.get_top_files(args.top_n), 1):
-            print(f"{i:2}. {file:45} [rank: {rank:.6f}]")
-
-        # Display top symbols
-        print(f"\n🔍 Top {args.top_n} Symbols by PageRank:")
-        print("=" * 60)
-        for i, ((file, symbol), rank) in enumerate(
-            processor.get_top_symbols(args.top_n), 1
-        ):
-            print(f"{i:2}. {symbol:30} in {file:30} [rank: {rank:.6f}]")
-
-        # Save ranks if requested
-        if args.save_ranks:
-            processor.save_ranks(args.save_ranks)
-            print(f"\n✅ Saved ranks to {args.save_ranks}")
+        pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
+        # ensure the table ranks are fresh
+        try:
+            touched = update_pagerank(pool)
+            if touched:
+                print(f"(re)computed PageRank (updated {touched} rows)")
+        except Exception:
+            pass
+        files, syms = top_files_and_symbols(pool, top_n=args.top_n)
+        print("\n📊 Top Files by PageRank:")
+        print("============================================================")
+        width = max((len(f) for f, _ in files), default=0)
+        for i, (f, r) in enumerate(files, 1):
+            print(f"{i:2d}. {f:<{width}}  [rank: {r:.6f}]")
+        print("\n🔍 Top Symbols (weighted by citing file PR):")
+        print("============================================================")
+        w2 = max((len(n) for n, _, _ in syms), default=0)
+        for i, (name, def_file, score) in enumerate(syms, 1):
+            print(f"{i:2d}. {name:<{w2}}  in {def_file}  [score: {score:.6f}]")
 
     elif args.cmd == "repomap":
         # Generate and display repository map

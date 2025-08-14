@@ -1,9 +1,10 @@
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict
 import cocoindex
 import json
 import re
+from collections import Counter
 
 
 from ..codesitter.spans import file_sha, slice_body, stable_id
@@ -23,7 +24,7 @@ class Chunk:
     end_line: int
     header: str
     body: str
-    deps: List[str]
+    deps: Dict[str, int]
     rank: float
     sha: str
     text: str
@@ -51,7 +52,10 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
     defs = data.get("defs", [])
     refs = data.get("refs", [])
 
-    deps = sorted({r["name"] for r in refs})
+    # Keep reference *counts* per identifier (better edge weights for PR)
+    dep_counts: Dict[str, int] = dict(
+        Counter([r["name"] for r in refs if r.get("name")])
+    )
 
     # Get PageRank scores if available
     try:
@@ -91,8 +95,12 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
         span_start_1 = d["start_line"] + 1
         span_end_1 = d["end_line"] + 1
         anchors = {span_start_1}
-        if deps and span_start_1 <= span_end_1:
-            idents = [x for x in deps if x and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", x)]
+        if dep_counts and span_start_1 <= span_end_1:
+            idents = [
+                x
+                for x in dep_counts.keys()
+                if x and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", x)
+            ]
             if idents:
                 rx = re.compile(
                     r"\b(" + "|".join(re.escape(x) for x in idents) + r")\b"
@@ -145,7 +153,7 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
             end_line=e1,
             header=header,
             body=body,
-            deps=deps,
+            deps=dep_counts,
             rank=symbol_rank,  # Use computed PageRank
             sha=sha,
             text=text,
