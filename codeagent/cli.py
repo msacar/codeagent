@@ -18,6 +18,14 @@ def main():
     p.add_argument("--q", help="query text")
     p.add_argument("--k", type=int, default=8)
     p.add_argument("--lang", default=None)
+    p.add_argument(
+        "--include", nargs="+", help="Glob patterns to include (e.g. **/*.ts **/*.py)"
+    )
+    p.add_argument(
+        "--exclude",
+        nargs="+",
+        help="Glob patterns to exclude (e.g. **/*.d.ts **/@types/** **/__tests__/**)",
+    )
     p.add_argument("--top-n", type=int, default=10, help="Number of top items to show")
     p.add_argument("--save-ranks", help="Save PageRank results to JSON file")
     p.add_argument("--load-ranks", help="Load PageRank results from JSON file")
@@ -58,7 +66,9 @@ def main():
             print(f"Loaded ranks from {args.load_ranks}")
         else:
             print("Computing PageRank for repository...")
-            processor.process_directory()
+            processor.process_directory(
+                patterns=args.include, exclude_patterns=args.exclude
+            )
             print("PageRank computation complete!")
 
         # Display top files
@@ -82,7 +92,12 @@ def main():
 
     elif args.cmd == "repomap":
         # Generate and display repository map
-        repo_map = RepoMap(args.root, max_tokens=args.max_tokens)
+        repo_map = RepoMap(
+            args.root,
+            max_tokens=args.max_tokens,
+            include=args.include,
+            exclude=args.exclude,
+        )
         print("Generating repository map...")
 
         map_content = repo_map.generate(focus_files=args.focus_files)
