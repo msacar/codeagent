@@ -6,6 +6,7 @@ import json
 
 
 from ..codesitter.spans import file_sha, slice_body, stable_id
+from ..codesitter.condense import condense_symbol_body
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,14 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
     refs = data.get("refs", [])
 
     deps = sorted({r["name"] for r in refs})
+    # Gather reference line numbers for LOI selection (ignore faux refs: line == -1)
+    ref_lines = sorted(
+        {
+            int(r["line"])
+            for r in refs
+            if isinstance(r.get("line"), int) and r["line"] >= 0
+        }
+    )
 
     # Get PageRank scores if available
     try:
@@ -64,10 +73,26 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
 
     out: List[Chunk] = []
     for d in defs:
-        pad = 12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
-        sline, eline, body = slice_body(
-            code_s, d["start_line"], d["end_line"], pad_after=pad
+        # Prefer condensed, Aider-style "lines of interest" within the def span.
+        # Fallback to contiguous slicing if nothing was selected.
+        loi_pad = 3
+        max_lines = (
+            80 if d["symbol_kind"] in ("function", "method", "constructor") else 60
         )
+        sline, eline, body = condense_symbol_body(
+            code_s=code_s,
+            def_start=d["start_line"],
+            def_end=d["end_line"],
+            ref_lines=ref_lines,
+            pad=loi_pad,
+            max_lines=max_lines,
+        )
+        if not body:
+            pad = 12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
+            sline, eline, body = slice_body(
+                code_s, d["start_line"], d["end_line"], pad_after=pad
+            )
+
         header = f"{rel}:L{sline}  {d['symbol_kind']} {d['name']}".strip()
         cid = stable_id(rel, d["name"], d["symbol_kind"], sline, eline)
         text = header + "\n" + body
