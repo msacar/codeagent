@@ -5,12 +5,16 @@ from typing import Optional, Tuple
 from grep_ast.tsl import get_language, get_parser
 
 _QUERIES_ENV = "CODEAGENT_QUERIES_DIR"
+DEBUG_TAGS = os.getenv("CODEAGENT_DEBUG_TAGS", "").lower() in ("1", "true", "yes", "on")
 
 
 def _fs_try(fname: str) -> Optional[str]:
     try:
         with open(fname, "r", encoding="utf-8") as f:
-            return f.read()
+            text = f.read()
+            if DEBUG_TAGS:
+                print(f"[codeagent][tags] using {fname}")
+            return text
     except Exception:
         return None
 
@@ -21,7 +25,11 @@ def _pkg_try(pkg_rel: Tuple[str, ...]) -> Optional[str]:
         for part in pkg_rel:
             p = p.joinpath(part)
         if p.exists():
-            return p.read_text(encoding="utf-8")
+            text = p.read_text(encoding="utf-8")
+            if DEBUG_TAGS:
+                pkg_path = "package://codeagent/" + "/".join(pkg_rel)
+                print(f"[codeagent][tags] using {pkg_path}")
+            return text
     except Exception:
         pass
     return None
@@ -45,6 +53,9 @@ def load_query_text(lang: str) -> Optional[str]:
         s = _pkg_try(("queries", sub, f"{lang}-tags.scm"))
         if s:
             return s
+
+    if DEBUG_TAGS:
+        print(f"[codeagent][tags] no tags file found for lang={lang}")
     return None
 
 
