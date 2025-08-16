@@ -3,12 +3,14 @@ Chat-aware context map using personalized PageRank.
 Optimizes the repo map for the current chat context, similar to Aider's approach.
 """
 
+import os
 import re
 from typing import Dict, List, Set, Optional
 from pathlib import Path
 import networkx as nx
+from psycopg_pool import ConnectionPool
 
-from .pipeline.batch_pagerank import BatchPageRankProcessor
+from .pipeline.pagerank_update import top_files_and_symbols
 from .codesitter.parser import parse_defs_and_refs
 from .codesitter.spans import slice_body
 
@@ -30,11 +32,13 @@ class ContextMapBuilder:
         exclude: Optional[List[str]] = None,
     ):
         self.root_dir = root_dir
-        self.processor = BatchPageRankProcessor(root_dir)
         self._include = include
         self._exclude = exclude
         self._graph = None
         self._file_symbols: Dict[str, List[dict]] = {}
+        # Get top files from database on initialization
+        self._top_files = None
+        self._top_symbols = None
 
     def _extract_mentions(self, prompt: str) -> Set[str]:
         """Extract file paths and symbol names mentioned in the prompt."""

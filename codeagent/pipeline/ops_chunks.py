@@ -57,16 +57,8 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
         Counter([r["name"] for r in refs if r.get("name")])
     )
 
-    # Get PageRank scores if available
-    try:
-        from .batch_pagerank import get_global_ranker
-
-        ranker = get_global_ranker()
-        file_rank = ranker.get_file_rank(rel)
-    except Exception:
-        # Fallback if PageRank not computed
-        file_rank = 0.0
-        ranker = None
+    # PageRank will be computed and filled by update_pagerank() after indexing
+    # For now, just use default rank of 0.0
 
     out: List[Chunk] = []
     for d in defs:
@@ -135,12 +127,6 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
         body = ((d.get("doc") + "\n") if d.get("doc") else "") + condensed
         text = header + "\n" + body
 
-        # Get symbol-specific rank if available
-        if ranker:
-            symbol_rank = ranker.get_symbol_rank(rel, d["name"])
-        else:
-            symbol_rank = file_rank
-
         chunk = Chunk(
             id=cid,
             file=rel,
@@ -154,7 +140,7 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
             header=header,
             body=body,
             deps=dep_counts,
-            rank=symbol_rank,  # Use computed PageRank
+            rank=0.0,  # PR will be filled by update_pagerank() after indexing
             sha=sha,
             text=text,
         )

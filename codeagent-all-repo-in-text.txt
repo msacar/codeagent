@@ -1,0 +1,1009 @@
+
+================================================================================
+File: codeagent/__init__.py
+Size: 1 B
+================================================================================
+
+
+
+
+================================================================================
+File: codeagent/cli.py
+Size: 1.3 kB
+================================================================================
+
+from __future__ import annotations
+import os, argparse
+from dotenv import load_dotenv
+from psycopg_pool import ConnectionPool
+from watchfiles import run_process
+
+from .pipeline.flow import run_index
+from .search.retriever import search
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("cmd", choices=["index", "query", "watch"])
+    p.add_argument("--root", default=".")
+    p.add_argument("--q", help="query text")
+    p.add_argument("--k", type=int, default=8)
+    p.add_argument("--lang", default=None)
+    args = p.parse_args()
+
+    os.environ.setdefault("CODEAGENT_ROOT", args.root)
+    load_dotenv()
+
+    if args.cmd == "index":
+        run_index()
+    elif args.cmd == "query":
+        pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
+        rows = search(pool, args.q or "", top_k=args.k, lang=args.lang)
+        for r in rows:
+            print(f"[{r['score']:.3f}] {r['file']}:{r['start']}-{r['end']}  {r['symbol_kind']} {r['name']}  ({r['lang']})")
+            print(" ", r["header"])
+            body = r["body"]
+            print(" ", (body[:200] + "…") if len(body) > 200 else body)
+            print("---")
+    elif args.cmd == "watch":
+        def _run(): run_index()
+        run_process(args.root, target=_run)
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+File: codeagent/codesitter/__init__.py
+Size: 24 B
+================================================================================
+
+# codesitter subpackage
+
+
+================================================================================
+File: codeagent/codesitter/parser.py
+Size: 8.59 kB
+================================================================================
+
+"""
+Generic Tree-sitter capture walker.
+Runs {lang}-tags.scm for TS/JS/Python and returns SymbolDef[] + RefTag[].
+Add new languages by dropping a tags.scm; no code change required.
+"""
+from typing import Tuple
+from dataclasses import dataclass
+from typing import Optional, List, Tuple
+import os
+from pygments.lexers import guess_lexer_for_filename
+from pygments.token import Token
+
+from .tags_loader import load_query_text, get_lang_and_parser
+from grep_ast.tsl import USING_TSL_PACK
+
+
+@dataclass(frozen=True)
+class SymbolDef:
+    file: str
+    abs_file: str
+    lang: str
+    name: str
+    symbol_kind: str            # class|interface|function|method|constructor|type|enum|module|constant|...
+    start_line: int
+    end_line: int
+    start_byte: int
+    end_byte: int
+    container: Optional[str] = None
+    doc: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RefTag:
+    file: str
+    abs_file: str
+    lang: str
+    name: str
+    line: int                   # -1 for faux-refs
+
+
+LANG_BY_EXT = {
+    ".ts": "typescript", ".tsx": "tsx",
+    ".js": "javascript", ".jsx": "javascript",
+    ".py": "python",
+}
+
+CLASS_LIKE = {
+    "typescript": {"class_declaration", "abstract_class_declaration"},
+    "tsx": {"class_declaration", "abstract_class_declaration"},
+    "javascript": {"class", "class_declaration"},
+    "python": {"class_definition"},
+}
+
+METHOD_LIKE = {
+    "typescript": {"method_definition", "method_signature", "abstract_method_signature", "construct_signature"},
+    "tsx": {"method_definition", "method_signature", "abstract_method_signature", "construct_signature"},
+    "javascript": {"method_definition"},
+    "python": {"function_definition"},  # container will distinguish methods vs top-level
+}
+
+FUNCTION_LIKE = {
+    "typescript": {"function_declaration", "function_signature", "function"},
+    "tsx": {"function_declaration", "function_signature", "function"},
+    "javascript": {
+        "function", "function_declaration", "function_expression",
+        "generator_function", "generator_function_declaration",
+    },
+    "python": {"function_definition", "async_function_definition", "decorated_definition"},
+}
+
+INTERFACE_TYPES = {"interface_declaration"}
+TYPE_TYPES = {"type_alias_declaration"}
+ENUM_TYPES = {"enum_declaration"}
+MODULE_TYPES = {"module", "internal_module", "namespace_declaration", "module_declaration"}
+
+
+def _filename_to_lang(path: str) -> Optional[str]:
+    _, ext = os.path.splitext(path)
+    return LANG_BY_EXT.get(ext.lower())
+
+
+def _normalize_kind(lang: str, node_type: str, cap_kind: str, name_text: str) -> str:
+    if node_type in INTERFACE_TYPES:
+        return "interface"
+    if node_type in TYPE_TYPES:
+        return "type"
+    if node_type in ENUM_TYPES:
+        return "enum"
+    if node_type in MODULE_TYPES:
+        return "module"
+    if node_type in CLASS_LIKE.get(lang, set()):
+        return "class"
+    if node_type in METHOD_LIKE.get(lang, set()):
+        if name_text == "constructor":
+            return "constructor"
+        return "method"
+    if node_type in FUNCTION_LIKE.get(lang, set()):
+        return "function"
+    if "." in cap_kind:
+        return cap_kind.split(".", 1)[1]
+    return cap_kind
+
+
+def _container_name(lang: str, def_node, code_b: bytes) -> Optional[str]:
+    n = def_node
+    while n:
+        t = n.type
+        if (lang in ("typescript", "tsx") and t in CLASS_LIKE["typescript"]) or \
+           (lang == "javascript" and t in CLASS_LIKE["javascript"]) or \
+           (lang == "python" and t in CLASS_LIKE["python"]):
+            for ch in n.children:
+                if ch.type in ("identifier", "type_identifier"):
+                    return code_b[ch.start_byte:ch.end_byte].decode("utf-8", "ignore")
+        n = n.parent
+    return None
+
+
+def parse_defs_and_refs_from_text(filename: str, rel_path: str, code_s: str) -> Tuple[list[SymbolDef], list[RefTag]]:
+    """
+    Parse directly from in-memory text (CocoIndex LocalFile provides filename+content).
+    """
+    lang = _filename_to_lang(filename)
+    if not lang:
+        return [], []
+    language, parser = get_lang_and_parser(lang)
+    qsrc = load_query_text(lang)
+    if not qsrc or not qsrc.strip():
+        print(f"[codeagent] WARNING: no tags.scm for lang={lang} (file={filename})")
+        return [], []
+
+    code_b = code_s.encode("utf-8", "ignore")
+    tree = parser.parse(code_b)
+    query = language.query(qsrc)
+    captures = query.captures(tree.root_node)
+    # Normalize to a flat list of (node, tag) like aider:
+    if USING_TSL_PACK:
+        all_caps = []
+        for tag, nodes in captures.items():
+            all_caps.extend((node, tag) for node in nodes)
+    else:
+        all_caps = captures
+
+    return _materialize_defs_refs(lang, rel_path, filename, code_b, code_s, all_caps)
+
+
+def parse_defs_and_refs(path: str, rel_path: str) -> Tuple[List[SymbolDef], List[RefTag]]:
+    lang = _filename_to_lang(path)
+    if not lang:
+        return [], []
+
+    language, parser = get_lang_and_parser(lang)
+    qsrc = load_query_text(lang)
+    if not qsrc or not qsrc.strip():
+        print(f"[codeagent] WARNING: no tags.scm for lang={lang} (file={path})")
+        return [], []
+
+    code_b = open(path, "rb").read()
+    code_s = code_b.decode("utf-8", "ignore")
+    tree = parser.parse(code_b)
+    query = language.query(qsrc)
+    captures = query.captures(tree.root_node)
+
+    if USING_TSL_PACK:
+        all_caps = []
+        for tag, nodes in captures.items():
+            all_caps.extend((node, tag) for node in nodes)
+    else:
+        all_caps = captures
+
+    return _materialize_defs_refs(lang, rel_path, path, code_b, code_s, all_caps)
+
+def _materialize_defs_refs(lang: str, rel_path: str, path: str, code_b: bytes, code_s: str, captures):
+    # (existing logic moved here unchanged)
+    def_nodes: dict[tuple[int, int], dict] = {}
+    name_nodes: list[tuple[object, str]] = []
+    doc_nodes: list[object] = []
+    refs: list[RefTag] = []
+    saw_def, saw_ref = False, False
+
+    def_nodes: dict[tuple[int, int], dict] = {}
+    name_nodes: list[tuple[object, str]] = []
+    doc_nodes: list[object] = []
+    refs: list[RefTag] = []
+    saw_def, saw_ref = False, False
+
+    for node, cap in captures:
+        if cap.startswith("definition."):
+            def_nodes[(node.start_byte, node.end_byte)] = {
+                "node": node,
+                "cap": cap,
+                "name": None,
+                "doc": None,
+            }
+            saw_def = True
+        elif cap.startswith("name.definition."):
+            name_nodes.append((node, cap))
+            saw_def = True
+        elif cap.startswith("name.reference."):
+            refs.append(RefTag(rel_path, path, lang,
+                               node.text.decode("utf-8", "ignore"),
+                               node.start_point[0]))
+            saw_ref = True
+        elif cap == "doc":
+            doc_nodes.append(node)
+
+    # attach names to containing defs (by byte containment)
+    for n_node, _ in name_nodes:
+        for (lo, hi), info in def_nodes.items():
+            if lo <= n_node.start_byte <= hi:
+                info["name"] = n_node.text.decode("utf-8", "ignore")
+                break
+
+    # attach doc to nearest following def (queries already bias adjacency)
+    for dnode in doc_nodes:
+        d_end = dnode.end_byte
+        candidates = sorted(
+            [(k, v) for k, v in def_nodes.items() if k[0] >= d_end],
+            key=lambda kv: kv[0][0]
+        )
+        if candidates:
+            candidates[0][1]["doc"] = dnode.text.decode("utf-8", "ignore")
+
+    # faux-refs if defs but no refs (e.g., many TS setups)
+    if saw_def and not saw_ref and code_s:
+        try:
+            lex = guess_lexer_for_filename(path, code_s)
+            for tok_type, tok_val in lex.get_tokens(code_s):
+                if tok_type in Token.Name and tok_val.strip():
+                    refs.append(RefTag(rel_path, path, lang, tok_val, -1))
+        except Exception:
+            pass
+
+    defs: list[SymbolDef] = []
+    for (lo, hi), info in def_nodes.items():
+        node = info["node"]
+        raw_cap = info["cap"]
+        name = info["name"] or ""
+        kind = _normalize_kind(lang, node.type, raw_cap, name)
+        defs.append(SymbolDef(
+            file=rel_path,
+            abs_file=path,
+            lang=lang,
+            name=name,
+            symbol_kind=kind,
+            start_line=node.start_point[0],
+            end_line=node.end_point[0],
+            start_byte=lo,
+            end_byte=hi,
+            container=_container_name(lang, node, code_b),
+            doc=info["doc"],
+        ))
+    return defs, refs
+
+
+================================================================================
+File: codeagent/codesitter/spans.py
+Size: 792 B
+================================================================================
+
+from __future__ import annotations
+import hashlib
+
+
+def file_sha(code_b: bytes) -> str:
+    return hashlib.sha256(code_b).hexdigest()
+
+
+def stable_id(file: str, name: str, kind: str, start_line: int, end_line: int) -> str:
+    s = f"{file}|{name}|{kind}|{start_line}|{end_line}"
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
+
+def slice_body(code_s: str, start_line: int, end_line: int, pad_after: int = 10) -> tuple[int, int, str]:
+    """
+    Returns 1-based (start_line, end_line) plus the text slice.
+    Pads after the end to bring in a bit of body/context for functions/methods.
+    """
+    lines = code_s.splitlines()
+    lo0 = max(0, start_line)
+    hi0 = min(len(lines) - 1, max(end_line, start_line) + pad_after)
+    return lo0 + 1, hi0 + 1, "\n".join(lines[lo0:hi0 + 1])
+
+
+
+================================================================================
+File: codeagent/codesitter/tags_loader.py
+Size: 1.62 kB
+================================================================================
+
+from __future__ import annotations
+import os
+from importlib import resources
+from typing import Optional, Tuple
+from grep_ast.tsl import get_language, get_parser
+
+_QUERIES_ENV = "CODEAGENT_QUERIES_DIR"
+
+
+def _fs_try(fname: str) -> Optional[str]:
+    try:
+        with open(fname, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def _pkg_try(pkg_rel: Tuple[str, ...]) -> Optional[str]:
+    try:
+        p = resources.files("codeagent")
+        for part in pkg_rel:
+            p = p.joinpath(part)
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return None
+
+
+def load_query_text(lang: str) -> Optional[str]:
+    """
+    Load {lang}-tags.scm. Preference:
+      1) $CODEAGENT_QUERIES_DIR/tree-sitter-language-pack/
+      2) $CODEAGENT_QUERIES_DIR/tree-sitter-languages/
+      3) packaged codeagent/queries/tree-sitter-language-pack/
+      4) packaged codeagent/queries/tree-sitter-languages/
+    """
+    override = os.environ.get(_QUERIES_ENV)
+    if override:
+        for sub in ("tree-sitter-language-pack", "tree-sitter-languages"):
+            s = _fs_try(os.path.join(override, sub, f"{lang}-tags.scm"))
+            if s:
+                return s
+    for sub in ("tree-sitter-language-pack", "tree-sitter-languages"):
+        s = _pkg_try(("queries", sub, f"{lang}-tags.scm"))
+        if s:
+            return s
+    return None
+
+
+def get_lang_and_parser(lang: str):
+    """
+    Resolve a tree-sitter Language and Parser using grep-ast's glue.
+    """
+    return get_language(lang), get_parser(lang)
+
+
+================================================================================
+File: codeagent/pipeline/__init__.py
+Size: 22 B
+================================================================================
+
+# pipeline subpackage
+
+
+================================================================================
+File: codeagent/pipeline/flow.py
+Size: 2.54 kB
+================================================================================
+
+import os
+from dotenv import load_dotenv
+import cocoindex
+from numpy.typing import NDArray
+import numpy as np
+from cocoindex import DataSlice
+
+from .ops_parse import parse_file_to_symbols
+from .ops_chunks import symbols_to_chunks
+
+
+@cocoindex.transform_flow()
+def chunk_text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
+
+
+@cocoindex.flow_def(name="CodeIndex")
+def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    root_dir = os.getenv("CODEAGENT_ROOT", os.getcwd())
+    data_scope["files"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(
+            path=root_dir,
+            included_patterns=["**/*.ts","**/*.tsx","**/*.js","**/*.jsx","**/*.py"],
+            excluded_patterns=[
+                "**/node_modules/**","**/dist/**","**/build/**",
+                "**/.git/**","**/.idea/**","**/__pycache__/**","**/__tests__/**"
+            ],
+        )
+    )
+    out = data_scope.add_collector()
+
+    with data_scope["files"].row() as f:
+        # Use .transform(...) so DataSlice values are realized at execution time.
+        f["symbols"] = f["content"].transform(parse_file_to_symbols, filename=f["filename"])
+        f["chunks"]  = f["symbols"].transform(symbols_to_chunks, filename=f["filename"], content=f["content"])
+        with f["chunks"].row() as ch:
+            ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
+            out.collect(
+                id=ch["id"], file=f["filename"], lang=ch["lang"],
+                symbol_kind=ch["symbol_kind"], name=ch["name"], container=ch["container"],
+                start=ch["start_line"], end=ch["end_line"],
+                header=ch["header"], body=ch["body"], deps=ch["deps"], rank=ch["rank"], sha=ch["sha"],
+                embedding=ch["embedding"],
+            )
+
+    out.export(
+        "code_chunks",
+        cocoindex.targets.Postgres(),
+        primary_key_fields=["id"],
+        vector_indexes=[
+            cocoindex.VectorIndexDef(
+                field_name="embedding",
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+            )
+        ],
+    )
+
+
+def run_index():
+    load_dotenv()
+    cocoindex.init()
+    # Create/align internal storage + target tables for this flow
+    build_index.setup(report_to_stdout=True)
+    stats = build_index.update()
+    print("Updated index:", stats)
+
+
+
+================================================================================
+File: codeagent/pipeline/ops_chunks.py
+Size: 2.32 kB
+================================================================================
+
+import os
+from dataclasses import dataclass
+from typing import List, Optional
+import cocoindex
+import json
+
+
+from ..codesitter.spans import file_sha, slice_body, stable_id
+from .ops_parse import SymbolsResult
+
+@dataclass(frozen=True)
+class Chunk:
+    id: str
+    file: str
+    abs_file: str
+    lang: str
+    symbol_kind: str
+    name: str
+    container: str | None
+    start_line: int
+    end_line: int
+    header: str
+    body: str
+    deps: List[str]
+    rank: float
+    sha: str
+    text: str
+
+
+
+@cocoindex.op.function()
+def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
+    """
+    Convert parsed defs/refs for a file to a list of chunks.
+    Inputs:
+      - syms: JSON string {"defs": [...], "refs": [...]}
+      - filename: relative filename (from LocalFile)
+      - content: file content (text)
+    """
+    # `filename` from LocalFile is relative to the source root; rebuild abs path for metadata.
+    root_dir = os.getenv("CODEAGENT_ROOT", os.getcwd())
+    abs_path = os.path.join(root_dir, filename)
+
+    rel = filename
+    # Ensure content is str
+    code_s = content or ""
+    code_b = code_s.encode("utf-8", "ignore")
+    sha = file_sha(code_b)
+    data = json.loads(syms or "{}")
+    defs = data.get("defs", [])
+    refs = data.get("refs", [])
+
+    deps = sorted({r["name"] for r in refs})
+
+    out: List[Chunk] = []
+    for d in defs:
+        pad = 12 if d["symbol_kind"] in ("function", "method", "constructor") else 6
+        sline, eline, body = slice_body(code_s, d["start_line"], d["end_line"], pad_after=pad)
+        header = f"{rel}:L{sline}  {d['symbol_kind']} {d['name']}".strip()
+        cid = stable_id(rel, d["name"], d["symbol_kind"], sline, eline)
+        text = header + "\n" + body
+        chunk = Chunk(
+            id=cid,
+            file=rel,
+            abs_file=abs_path,
+            lang=d["lang"],
+            symbol_kind=d["symbol_kind"],
+            name=d["name"],
+            container=d.get("container"),
+            start_line=sline,
+            end_line=eline,
+            header=header,
+            body=((d.get("doc") + "\n") if d.get("doc") else "") + body,
+            deps=deps,
+            rank=0.0,
+            sha=sha,
+            text=text,
+        )
+        out.append(chunk)  # return dataclass instances (Struct rows)
+    return out
+
+================================================================================
+File: codeagent/pipeline/ops_parse.py
+Size: 876 B
+================================================================================
+
+import cocoindex
+import json
+from typing import Dict, List, TypedDict, Any, cast
+from ..codesitter.parser import parse_defs_and_refs_from_text
+
+
+class SymbolsResult(TypedDict):
+    defs: List[Dict[str, Any]]
+    refs: List[Dict[str, Any]]
+
+@cocoindex.op.function()
+def parse_file_to_symbols(content: str, filename: str) -> str:
+    """
+    Parse a single file to SymbolDef[] and RefTag[] using Tree-sitter queries.
+    Returns a JSON string: {"defs": [...], "refs": [...]}.
+    """
+    rel = filename  # LocalFile's filename is already relative to the source root
+    defs, refs = parse_defs_and_refs_from_text(filename, rel, content or "")
+    payload = {
+            "defs": [d.__dict__ for d in defs],
+            "refs": [r.__dict__ for r in refs],
+    }
+    # JSON is a supported scalar type for CocoIndex op outputs.
+    return json.dumps(payload, ensure_ascii=False)
+
+
+
+
+================================================================================
+File: codeagent/queries/tree-sitter-language-pack/javascript-tags.scm
+Size: 2.31 kB
+================================================================================
+
+(
+  (comment)* @doc
+  .
+  (method_definition
+    name: (property_identifier) @name.definition.method) @definition.method
+  (#not-eq? @name.definition.method "constructor")
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.method)
+)
+
+(
+  (comment)* @doc
+  .
+  [
+    (class
+      name: (_) @name.definition.class)
+    (class_declaration
+      name: (_) @name.definition.class)
+  ] @definition.class
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.class)
+)
+
+(
+  (comment)* @doc
+  .
+  [
+    (function_expression
+      name: (identifier) @name.definition.function)
+    (function_declaration
+      name: (identifier) @name.definition.function)
+    (generator_function
+      name: (identifier) @name.definition.function)
+    (generator_function_declaration
+      name: (identifier) @name.definition.function)
+  ] @definition.function
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.function)
+)
+
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name.definition.function
+      value: [(arrow_function) (function_expression)]) @definition.function)
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.function)
+)
+
+(
+  (comment)* @doc
+  .
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @name.definition.function
+      value: [(arrow_function) (function_expression)]) @definition.function)
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.function)
+)
+
+(assignment_expression
+  left: [
+    (identifier) @name.definition.function
+    (member_expression
+      property: (property_identifier) @name.definition.function)
+  ]
+  right: [(arrow_function) (function_expression)]
+) @definition.function
+
+(pair
+  key: (property_identifier) @name.definition.function
+  value: [(arrow_function) (function_expression)]) @definition.function
+
+(
+  (call_expression
+    function: (identifier) @name.reference.call) @reference.call
+  (#not-match? @name.reference.call "^(require)$")
+)
+
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @name.reference.call)
+  arguments: (_) @reference.call)
+
+(new_expression
+  constructor: (_) @name.reference.class) @reference.class
+
+
+================================================================================
+File: codeagent/queries/tree-sitter-language-pack/python-tags.scm
+Size: 437 B
+================================================================================
+
+(module (expression_statement (assignment left: (identifier) @name.definition.constant) @definition.constant))
+
+(class_definition
+  name: (identifier) @name.definition.class) @definition.class
+
+(function_definition
+  name: (identifier) @name.definition.function) @definition.function
+
+(call
+  function: [
+      (identifier) @name.reference.call
+      (attribute
+        attribute: (identifier) @name.reference.call)
+  ]) @reference.call
+
+
+================================================================================
+File: codeagent/queries/tree-sitter-language-pack/typescript-tags.scm
+Size: 1.25 kB
+================================================================================
+
+(function_signature
+  name: (identifier) @name.definition.function) @definition.function
+
+(method_signature
+  name: (property_identifier) @name.definition.method) @definition.method
+
+(abstract_method_signature
+  name: (property_identifier) @name.definition.method) @definition.method
+
+(abstract_class_declaration
+  name: (type_identifier) @name.definition.class) @definition.class
+
+(module
+  name: (identifier) @name.definition.module) @definition.module
+
+(interface_declaration
+  name: (type_identifier) @name.definition.interface) @definition.interface
+
+(type_annotation
+  (type_identifier) @name.reference.type) @reference.type
+
+(new_expression
+  constructor: (identifier) @name.reference.class) @reference.class
+
+(function_declaration
+  name: (identifier) @name.definition.function) @definition.function
+
+(method_definition
+  name: (property_identifier) @name.definition.method) @definition.method
+
+(class_declaration
+  name: (type_identifier) @name.definition.class) @definition.class
+
+(interface_declaration
+  name: (type_identifier) @name.definition.class) @definition.class
+
+(type_alias_declaration
+  name: (type_identifier) @name.definition.type) @definition.type
+
+(enum_declaration
+  name: (identifier) @name.definition.enum) @definition.enum
+
+
+================================================================================
+File: codeagent/queries/tree-sitter-languages/javascript-tags.scm
+Size: 2.25 kB
+================================================================================
+
+(
+  (comment)* @doc
+  .
+  (method_definition
+    name: (property_identifier) @name.definition.method) @definition.method
+  (#not-eq? @name.definition.method "constructor")
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.method)
+)
+
+(
+  (comment)* @doc
+  .
+  [
+    (class
+      name: (_) @name.definition.class)
+    (class_declaration
+      name: (_) @name.definition.class)
+  ] @definition.class
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.class)
+)
+
+(
+  (comment)* @doc
+  .
+  [
+    (function
+      name: (identifier) @name.definition.function)
+    (function_declaration
+      name: (identifier) @name.definition.function)
+    (generator_function
+      name: (identifier) @name.definition.function)
+    (generator_function_declaration
+      name: (identifier) @name.definition.function)
+  ] @definition.function
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.function)
+)
+
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name.definition.function
+      value: [(arrow_function) (function)]) @definition.function)
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.function)
+)
+
+(
+  (comment)* @doc
+  .
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @name.definition.function
+      value: [(arrow_function) (function)]) @definition.function)
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.function)
+)
+
+(assignment_expression
+  left: [
+    (identifier) @name.definition.function
+    (member_expression
+      property: (property_identifier) @name.definition.function)
+  ]
+  right: [(arrow_function) (function)]
+) @definition.function
+
+(pair
+  key: (property_identifier) @name.definition.function
+  value: [(arrow_function) (function)]) @definition.function
+
+(
+  (call_expression
+    function: (identifier) @name.reference.call) @reference.call
+  (#not-match? @name.reference.call "^(require)$")
+)
+
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @name.reference.call)
+  arguments: (_) @reference.call)
+
+(new_expression
+  constructor: (_) @name.reference.class) @reference.class
+
+
+================================================================================
+File: codeagent/queries/tree-sitter-languages/python-tags.scm
+Size: 325 B
+================================================================================
+
+(class_definition
+  name: (identifier) @name.definition.class) @definition.class
+
+(function_definition
+  name: (identifier) @name.definition.function) @definition.function
+
+(call
+  function: [
+      (identifier) @name.reference.call
+      (attribute
+        attribute: (identifier) @name.reference.call)
+  ]) @reference.call
+
+
+================================================================================
+File: codeagent/queries/tree-sitter-languages/typescript-tags.scm
+Size: 1.25 kB
+================================================================================
+
+(function_signature
+  name: (identifier) @name.definition.function) @definition.function
+
+(method_signature
+  name: (property_identifier) @name.definition.method) @definition.method
+
+(abstract_method_signature
+  name: (property_identifier) @name.definition.method) @definition.method
+
+(abstract_class_declaration
+  name: (type_identifier) @name.definition.class) @definition.class
+
+(module
+  name: (identifier) @name.definition.module) @definition.module
+
+(interface_declaration
+  name: (type_identifier) @name.definition.interface) @definition.interface
+
+(type_annotation
+  (type_identifier) @name.reference.type) @reference.type
+
+(new_expression
+  constructor: (identifier) @name.reference.class) @reference.class
+
+(function_declaration
+  name: (identifier) @name.definition.function) @definition.function
+
+(method_definition
+  name: (property_identifier) @name.definition.method) @definition.method
+
+(class_declaration
+  name: (type_identifier) @name.definition.class) @definition.class
+
+(interface_declaration
+  name: (type_identifier) @name.definition.class) @definition.class
+
+(type_alias_declaration
+  name: (type_identifier) @name.definition.type) @definition.type
+
+(enum_declaration
+  name: (identifier) @name.definition.enum) @definition.enum
+
+
+================================================================================
+File: codeagent/search/__init__.py
+Size: 20 B
+================================================================================
+
+# search subpackage
+
+
+================================================================================
+File: codeagent/search/retriever.py
+Size: 1.56 kB
+================================================================================
+
+from __future__ import annotations
+from psycopg_pool import ConnectionPool
+from pgvector.psycopg import register_vector
+import cocoindex
+
+from ..pipeline.flow import build_index
+
+
+def _embed_query(q: str):
+    return cocoindex.functions.SentenceTransformerEmbed(
+        model="sentence-transformers/all-MiniLM-L6-v2"
+    ).eval(q)
+
+
+def search(pool: ConnectionPool, query: str, top_k: int = 8, lang: str | None = None):
+    table = cocoindex.utils.get_target_default_name(build_index, "code_chunks")
+    qvec = _embed_query(query)
+
+    filters, params = [], [qvec]
+    if lang:
+        filters.append("lang = %s")
+        params.append(lang)
+
+    tok = (query.split() or [""])[0]
+    if len(tok) >= 3:
+        filters.append("(name ILIKE %s OR file ILIKE %s)")
+        params.extend([f"%{tok}%", f"%{tok}%"])
+
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.append(qvec)
+    params.append(top_k)
+
+    sql = f"""
+    SELECT id, file, name, lang, symbol_kind, container,
+           header, body, start, "end",
+           1.0 - (embedding <=> %s) AS score, rank
+    FROM {table}
+    {where}
+    ORDER BY (embedding <=> %s) ASC, rank DESC
+    LIMIT %s
+    """
+    with pool.connection() as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [dict(
+        id=r[0], file=r[1], name=r[2], lang=r[3], symbol_kind=r[4], container=r[5],
+        header=r[6], body=r[7], start=r[8], end=r[9], score=r[10], rank=r[11]
+    ) for r in rows]
+

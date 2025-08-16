@@ -7,9 +7,10 @@ with contextual code snippets.
 import os
 from typing import List, Tuple, Optional
 from pathlib import Path
+from psycopg_pool import ConnectionPool
 from .codesitter.parser import parse_defs_and_refs
 from .codesitter.spans import slice_body
-from .pipeline.batch_pagerank import BatchPageRankProcessor
+from .pipeline.pagerank_update import top_files_and_symbols
 
 
 class RepoMap:
@@ -27,7 +28,6 @@ class RepoMap:
     ):
         self.root_dir = root_dir or os.getenv("CODEAGENT_ROOT", os.getcwd())
         self.max_tokens = max_tokens
-        self.processor = BatchPageRankProcessor(self.root_dir)
         self._include = include
         self._exclude = exclude
 
@@ -41,13 +41,9 @@ class RepoMap:
         Returns:
             A formatted string showing the repository structure and key code
         """
-        # Process all files to compute PageRank (respect CLI filters if given)
-        self.processor.process_directory(
-            patterns=self._include, exclude_patterns=self._exclude
-        )
-
-        # Get top files by PageRank
-        top_files = self.processor.get_top_files(20)
+        # Compute PageRank from the current DB table and list top files
+        pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
+        top_files, _ = top_files_and_symbols(pool, top_n=20)
 
         # If focus files are provided, boost their priority
         if focus_files:
@@ -94,10 +90,12 @@ class RepoMap:
                 # Parse file to get symbols
                 defs, _ = parse_defs_and_refs(str(file_path), file)
 
-                # Sort definitions by their rank
+                # Sort definitions by their rank (use database rank or default)
                 ranked_defs = []
                 for d in defs:
-                    symbol_rank = self.processor.get_symbol_rank(file, d.name)
+                    # Use file rank as approximation for symbol rank
+                    # (in a real implementation, we'd query the DB for actual symbol ranks)
+                    symbol_rank = file_rank
                     ranked_defs.append((d, symbol_rank))
                 ranked_defs.sort(key=lambda x: x[1], reverse=True)
 
