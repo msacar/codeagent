@@ -3,6 +3,7 @@ import os
 import argparse
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
+from pgvector.psycopg import register_vector
 from watchfiles import run_process
 from cocoindex import utils as cx_utils
 
@@ -110,16 +111,22 @@ def main():
     if args.cmd == "index":
         run_index()
     elif args.cmd == "query":
-        pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
-        rows = search(pool, args.q or "", top_k=args.k, lang=args.lang)
-        for r in rows:
-            print(
-                f"[{r['score']:.3f}] {r['file']}:{r['start']}-{r['end']}  {r['symbol_kind']} {r['name']}  ({r['lang']})"
-            )
-            print(" ", r["header"])
-            body = r["body"]
-            print(" ", (body[:200] + "…") if len(body) > 200 else body)
-            print("---")
+
+        def _configure(conn):  # runs on every new connection from the pool
+            register_vector(conn)
+
+        with ConnectionPool(
+            os.environ["COCOINDEX_DATABASE_URL"], configure=_configure
+        ) as pool:
+            rows = search(pool, args.q or "", top_k=args.k, lang=args.lang)
+            for r in rows:
+                print(
+                    f"[{r['score']:.3f}] {r['file']}:{r['start']}-{r['end']}  {r['symbol_kind']} {r['name']}  ({r['lang']})"
+                )
+                print(" ", r["header"])
+                body = r["body"]
+                print(" ", (body[:200] + "…") if len(body) > 200 else body)
+                print("---")
     elif args.cmd == "watch":
 
         def _run():
@@ -127,26 +134,32 @@ def main():
 
         run_process(args.root, target=_run)
     elif args.cmd == "pagerank":
-        pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
-        # ensure the table ranks are fresh
-        table = cx_utils.get_target_default_name(build_index, "code_chunks")
-        try:
-            touched = update_pagerank(pool, table)
-            if touched:
-                print(f"(re)computed PageRank (updated {touched} rows)")
-        except Exception:
-            pass
-        files, syms = top_files_and_symbols(pool, table, top_n=args.top_n)
-        print("\n📊 Top Files by PageRank:")
-        print("============================================================")
-        width = max((len(f) for f, _ in files), default=0)
-        for i, (f, r) in enumerate(files, 1):
-            print(f"{i:2d}. {f:<{width}}  [rank: {r:.6f}]")
-        print("\n🔍 Top Symbols (weighted by citing file PR):")
-        print("============================================================")
-        w2 = max((len(n) for n, _, _ in syms), default=0)
-        for i, (name, def_file, score) in enumerate(syms, 1):
-            print(f"{i:2d}. {name:<{w2}}  in {def_file}  [score: {score:.6f}]")
+
+        def _configure(conn):  # runs on every new connection from the pool
+            register_vector(conn)
+
+        with ConnectionPool(
+            os.environ["COCOINDEX_DATABASE_URL"], configure=_configure
+        ) as pool:
+            # ensure the table ranks are fresh
+            table = cx_utils.get_target_default_name(build_index, "code_chunks")
+            try:
+                touched = update_pagerank(pool, table)
+                if touched:
+                    print(f"(re)computed PageRank (updated {touched} rows)")
+            except Exception:
+                pass
+            files, syms = top_files_and_symbols(pool, table, top_n=args.top_n)
+            print("\n📊 Top Files by PageRank:")
+            print("============================================================")
+            width = max((len(f) for f, _ in files), default=0)
+            for i, (f, r) in enumerate(files, 1):
+                print(f"{i:2d}. {f:<{width}}  [rank: {r:.6f}]")
+            print("\n🔍 Top Symbols (weighted by citing file PR):")
+            print("============================================================")
+            w2 = max((len(n) for n, _, _ in syms), default=0)
+            for i, (name, def_file, score) in enumerate(syms, 1):
+                print(f"{i:2d}. {name:<{w2}}  in {def_file}  [score: {score:.6f}]")
 
     elif args.cmd == "repomap":
         # Generate and display repository map

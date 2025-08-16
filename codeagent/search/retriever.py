@@ -52,10 +52,10 @@ def search(pool: ConnectionPool, query: str, top_k: int = 8, lang: str | None = 
     sql = f"""
     SELECT id, file, name, lang, symbol_kind, container,
            header, body, start, "end",
-           1.0 - (embedding <=> %s) AS score, rank
+           1.0 - (embedding <=> %s::vector) AS score, rank
     FROM {table}
     {where}
-    ORDER BY (embedding <=> %s) ASC, rank DESC
+    ORDER BY (embedding <=> %s::vector) ASC, rank DESC
     LIMIT %s
     """
     with pool.connection() as conn:
