@@ -4,8 +4,9 @@ import argparse
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from watchfiles import run_process
+from cocoindex import utils as cx_utils
 
-from .pipeline.flow import run_index
+from .pipeline.flow import run_index, build_index
 from .search.retriever import search
 from .pipeline.pagerank_update import top_files_and_symbols, update_pagerank
 from .repomap import RepoMap
@@ -128,13 +129,14 @@ def main():
     elif args.cmd == "pagerank":
         pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
         # ensure the table ranks are fresh
+        table = cx_utils.get_target_default_name(build_index, "code_chunks")
         try:
-            touched = update_pagerank(pool)
+            touched = update_pagerank(pool, table)
             if touched:
                 print(f"(re)computed PageRank (updated {touched} rows)")
         except Exception:
             pass
-        files, syms = top_files_and_symbols(pool, top_n=args.top_n)
+        files, syms = top_files_and_symbols(pool, table, top_n=args.top_n)
         print("\n📊 Top Files by PageRank:")
         print("============================================================")
         width = max((len(f) for f, _ in files), default=0)

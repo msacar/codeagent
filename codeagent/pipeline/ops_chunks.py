@@ -12,6 +12,12 @@ from ..codesitter.condense import condense_symbol_body
 
 
 @dataclass(frozen=True)
+class Dep:
+    name: str
+    count: int
+
+
+@dataclass(frozen=True)
 class Chunk:
     id: str
     file: str
@@ -24,7 +30,7 @@ class Chunk:
     end_line: int
     header: str
     body: str
-    deps: Dict[str, int]
+    deps: List[Dep]
     rank: float
     sha: str
     text: str
@@ -127,6 +133,11 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
         body = ((d.get("doc") + "\n") if d.get("doc") else "") + condensed
         text = header + "\n" + body
 
+        # Materialize deps as a list of Dep structs (LTable) per CocoIndex typing rules
+        dep_list: List[Dep] = [
+            Dep(name=n, count=int(c)) for n, c in sorted(dep_counts.items())
+        ]
+
         chunk = Chunk(
             id=cid,
             file=rel,
@@ -139,7 +150,7 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
             end_line=e1,
             header=header,
             body=body,
-            deps=dep_counts,
+            deps=dep_list,
             rank=0.0,  # PR will be filled by update_pagerank() after indexing
             sha=sha,
             text=text,

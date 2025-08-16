@@ -2,15 +2,12 @@ from __future__ import annotations
 from typing import Dict
 import networkx as nx
 from psycopg_pool import ConnectionPool
-import cocoindex
-
-from .flow import build_index
 
 
 def _load_graph_inputs(pool: ConnectionPool, table: str):
     """
     Load minimal data to build a defs/refs graph:
-      - per-chunk: id, file, name, deps(json{name->count})
+      - per-chunk: id, file, name, deps (list of Dep objects with name and count)
     We aggregate to:
       - defines[name] -> set(files)
       - refs_by_file[file] -> Counter-like dict{name->count}
@@ -25,10 +22,13 @@ def _load_graph_inputs(pool: ConnectionPool, table: str):
                 # defs: any chunk with a non-empty name is considered a def chunk
                 if name:
                     defines.setdefault(name, set()).add(file)
-                # refs: merge dep counts (dict of name->count) per file
-                if isinstance(deps, dict):
-                    rf = refs_by_file.setdefault(file, {})
-                    for n, c in deps.items():
+                # refs: merge dep counts per file
+                rf = refs_by_file.setdefault(file, {})
+                if isinstance(deps, list):
+                    # deps is a list of {"name": str, "count": int}
+                    for d in deps:
+                        n = d.get("name")
+                        c = d.get("count", 1)
                         if not n:
                             continue
                         rf[n] = rf.get(n, 0) + int(c or 0)
@@ -79,24 +79,21 @@ def _update_chunk_ranks(
     return rows
 
 
-def update_pagerank(pool: ConnectionPool) -> int:
-    """
-    Public entry: recompute file PageRank from current chunks and update table.
-    Returns number of rows touched by the update.
-    """
-    table = cocoindex.utils.get_target_default_name(build_index, "code_chunks")
+def update_pagerank(pool: ConnectionPool, table: str = "code_chunks") -> int:
+    """Recompute file PageRank from current chunks and update table."""
     defines, refs_by_file = _load_graph_inputs(pool, table)
     file_pr = _compute_file_pagerank(defines, refs_by_file)
     return _update_chunk_ranks(pool, table, file_pr)
 
 
-def top_files_and_symbols(pool: ConnectionPool, top_n: int = 50):
+def top_files_and_symbols(
+    pool: ConnectionPool, table: str = "code_chunks", top_n: int = 50
+):
     """
     Convenience for CLI: compute PR, then return:
       - top files by PR
       - top symbols weighted by citing file PR (sum over files of ref_count * PR(file)).
     """
-    table = cocoindex.utils.get_target_default_name(build_index, "code_chunks")
     defines, refs_by_file = _load_graph_inputs(pool, table)
     file_pr = _compute_file_pagerank(defines, refs_by_file)
 

@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 import cocoindex
+from cocoindex import utils as cx_utils
 
 from .ops_parse import parse_file_to_symbols
 from .ops_chunks import symbols_to_chunks
@@ -39,19 +40,20 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
     )
     out = data_scope.add_collector()
 
-    with data_scope["files"].row() as f:
-        # Use .transform(...) so DataSlice values are realized at execution time.
-        f["symbols"] = f["content"].transform(
-            parse_file_to_symbols, filename=f["filename"]
+    # For-each-row on the files table (one .row() only)
+    with data_scope["files"].row() as file:
+        # Per-row transforms live as fields on the row Struct to keep KTable V=Struct
+        file["symbols"] = file["content"].transform(
+            parse_file_to_symbols, filename=file["filename"]
         )
-        f["chunks"] = f["symbols"].transform(
-            symbols_to_chunks, filename=f["filename"], content=f["content"]
+        file["chunks"] = file["symbols"].transform(
+            symbols_to_chunks, filename=file["filename"], content=file["content"]
         )
-        with f["chunks"].row() as ch:
+        with file["chunks"].row() as ch:
             ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
             out.collect(
                 id=ch["id"],
-                file=f["filename"],
+                file=file["filename"],
                 lang=ch["lang"],
                 symbol_kind=ch["symbol_kind"],
                 name=ch["name"],
@@ -91,7 +93,9 @@ def run_index():
     if db_url:
         try:
             pool = ConnectionPool(db_url)
-            touched = update_pagerank(pool)
+            # Resolve the table name for this build_index target
+            table = cx_utils.get_target_default_name(build_index, "code_chunks")
+            touched = update_pagerank(pool, table)
             print(f"Updated PageRank on {touched} chunk rows.")
         except Exception as e:
             print("[WARN] PageRank update skipped:", e)

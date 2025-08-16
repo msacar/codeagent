@@ -8,9 +8,11 @@ import os
 from typing import List, Tuple, Optional
 from pathlib import Path
 from psycopg_pool import ConnectionPool
+from cocoindex import utils as cx_utils
 from .codesitter.parser import parse_defs_and_refs
 from .codesitter.spans import slice_body
 from .pipeline.pagerank_update import top_files_and_symbols
+from .pipeline.flow import build_index
 
 
 class RepoMap:
@@ -43,7 +45,8 @@ class RepoMap:
         """
         # Compute PageRank from the current DB table and list top files
         pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
-        top_files, _ = top_files_and_symbols(pool, top_n=20)
+        table = cx_utils.get_target_default_name(build_index, "code_chunks")
+        top_files, _ = top_files_and_symbols(pool, table, top_n=20)
 
         # If focus files are provided, boost their priority
         if focus_files:

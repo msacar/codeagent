@@ -3,14 +3,11 @@ Chat-aware context map using personalized PageRank.
 Optimizes the repo map for the current chat context, similar to Aider's approach.
 """
 
-import os
 import re
 from typing import Dict, List, Set, Optional
 from pathlib import Path
 import networkx as nx
-from psycopg_pool import ConnectionPool
 
-from .pipeline.pagerank_update import top_files_and_symbols
 from .codesitter.parser import parse_defs_and_refs
 from .codesitter.spans import slice_body
 
