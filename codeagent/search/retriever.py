@@ -2,14 +2,33 @@ from __future__ import annotations
 from psycopg_pool import ConnectionPool
 from pgvector.psycopg import register_vector
 import cocoindex
+import os
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
 from ..pipeline.flow import build_index
 
+_MODEL = None
+
+
+def _get_model() -> SentenceTransformer:
+    global _MODEL
+    if _MODEL is None:
+        # keep this in sync with your indexing model
+        model_name = os.getenv(
+            "CODEAGENT_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+        )
+        _MODEL = SentenceTransformer(model_name)
+    return _MODEL
+
 
 def _embed_query(q: str):
-    return cocoindex.functions.SentenceTransformerEmbed(
-        model="sentence-transformers/all-MiniLM-L6-v2"
-    ).eval(q)
+    # SentenceTransformers uses `encode` for embeddings
+    # normalize to unit length; pgvector `<=>` uses cosine distance
+    vec = _get_model().encode([q], normalize_embeddings=True)[0]
+    if isinstance(vec, np.ndarray):
+        vec = vec.astype(np.float32)
+    return vec.tolist()
 
 
 def search(pool: ConnectionPool, query: str, top_k: int = 8, lang: str | None = None):

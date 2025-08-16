@@ -1,19 +1,86 @@
-I dug through the Aider sources you shared—here’s exactly how Aider handles this, and why it never bumps into your “constructor mislabeled / empty method name” problem:
+In CocoIndex, a KTable maps to dict[K, V] where V must be a Struct (dataclass or NamedTuple). So dict[str, Dep] is valid as long as Dep is a Struct, not a primitive. This is exactly what the CocoIndex docs say under Data Types → KTable and Struct Types. 
+cocoindex.io
 
-* **Aider doesn’t track symbol kinds at all.** In the repo-map pass it only cares about *names* and whether a capture is a **def** or a **ref**. It looks at Tree-sitter query captures and keeps anything whose tag starts with `name.definition.` (def) or `name.reference.` (ref). The “kind” it records is just `"def"` or `"ref"`, not `"class" | "method" | "constructor"`. Names are taken straight from `node.text`.&#x20;
+Why your error happened
+The exception KTable value must be a Struct type, got <class 'int'> is what you’d get if a field in your row Struct is a dict of primitives (e.g., dict[str, int]). Any dict[...] inside a Struct is interpreted as a nested KTable, and per the spec, its value-type must be a Struct (not int, str, …). 
+cocoindex.io
 
-* **If a language’s queries don’t produce refs, Aider backfills refs with a tokenizer pass.** After seeing defs with no refs, it runs Pygments, collects every `Token.Name`, and treats those as refs. That keeps the graph dense enough for ranking without doing any language-specific inference.&#x20;
+Two perfectly valid fixes (both spec-compliant)
 
-* **Query file selection mirrors what you described.** It prefers `queries/tree-sitter-language-pack/{lang}-tags.scm` when running with the language pack, and falls back to `queries/tree-sitter-languages/{lang}-tags.scm`. So the “two folders” you noticed are both supported; the pack is preferred when present.&#x20;
+Keep your deps as a nested KTable with a Struct value
+Define a small dataclass and change the annotation:
 
-* **All downstream logic is name-based, not kind-based.** Aider builds a PageRank graph from “who references which defined identifier” and weights edges; there’s no constructor/method/class logic anywhere in that ranking. Later it renders context with `TreeContext` using the lines where those *name* nodes occur. Again: no symbol-kind classification. &#x20;
+from dataclasses import dataclass
 
-### What that means for you
+@dataclass
+class Dep:
+    count: int  # you can add kind/lang/etc later
 
-If you want to behave “like Aider” (and avoid maintaining per-language rules):
+@dataclass(frozen=True)
+class Chunk:
+    ...
+    deps: dict[str, Dep]  # KTable: key=str, value=Struct
 
-* In your **parse stage**, emit records keyed off **`name.definition.*`** and **`name.reference.*`** only, and drop any attempt to decide `"class" | "method" | "constructor"` there. That’s precisely what Aider does.&#x20;
-* If refs are missing for a language, you can adopt Aider’s simple **token backfill** so your def/ref graph stays useful without extra SCM work.&#x20;
-* If your **chunker** currently depends on `symbol_kind` for padding, just add a **sane default** (treat unknown kind as “function-like” padding). That keeps chunk quality high without language-specific normalization—this is why Aider avoids the whole constructor edge case in the first place.
 
-If you want, I can adjust your `ops_parse.py` to emit only Aider-style `{"name", "kind": "def|ref", "line"}` (plus file/lang), and tweak `symbols_to_chunks` so it doesn’t rely on per-language kinds. That will make your pipeline match Aider’s behavior 1:1 while keeping your SCM files untouched.
+When building deps:
+
+dep_counts: dict[str, int] = ...
+deps_struct = {name: Dep(count=int(c)) for name, c in dep_counts.items()}
+
+
+Now the nested dict[...] satisfies “V is a Struct”. (Docs: KTable dict[K, V]; V must be a Struct. Structs are dataclasses/NamedTuples.) 
+cocoindex.io
+
+Or avoid a nested KTable entirely
+Represent dependencies as a list of Structs (an LTable), e.g.:
+
+@dataclass
+class Dep:
+    name: str
+    count: int
+
+@dataclass(frozen=True)
+class Chunk:
+    ...
+    deps: list[Dep]  # LTable: list of Struct
+
+
+This also aligns with the spec (LTable is list[R] where R is a Struct). It’s simpler if you don’t need key-based lookups/joins on deps. 
+cocoindex.io
+
+A note on your row() usage
+Your switch to with data_scope["files"].row() as f: is also per the book—row() is how CocoIndex expects you to attach per-row transforms so the table value remains a Struct. The flow-definition guide shows this exact pattern. 
+cocoindex.io
+
+When to choose which:
+
+Use dict[str, Dep] if you’ll do key-based joins/merges/dedup by identifier name later (natural KTable semantics).
+
+Use list[Dep] if it’s just metadata you iterate over—lighter and avoids accidental KTable rules.
+
+Either way, the key rule is: no dict[str, int] (or other primitive) inside a row Struct—make the value a Struct.
+
+If you’d like, I can draft a tiny patch that swaps deps: Dict[str, int] → deps: Dict[str, Dep] (or List[Dep]) and updates the construction code accordingly.What’s breaking (and why)
+
+The error:
+
+ValueError: KTable value must have a Struct type, got <class 'int'>
+
+
+is triggered because we declared the deps field on our chunk as a Dict[str, int]. In CocoIndex’s type system, a dict[K, V] is treated as a KTable; the V (the table row value) must be a Struct, not a primitive like int. So Dict[str, int] is illegal in a KTable context and produces exactly this error. The official docs call this out: KTable value types must be Structs; dict[K,V] is encoded as a KTable where V must be a struct, while lists of Struct are modeled as an LTable and are fine. 
+cocoindex.io
+
+We already fixed .row() usage (only call it once per table slice), which matches CocoIndex’s “for-each-row” pattern. This new error is independent of that and is purely about the field type. 
+cocoindex.io
+
+Minimal, safe fix
+
+Change deps from Dict[str, int] → List[Dep], where Dep is a tiny dataclass:
+
+This makes deps an LTable of Struct, which CocoIndex supports natively.
+
+We’ll still keep the same information: each dependency’s name and count.
+
+Also, update the PageRank loader to handle both the new List[Dep] and (for safety) any legacy rows that might still be dict.
+
+
