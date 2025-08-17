@@ -164,6 +164,27 @@ def parse_defs_and_refs_from_text(
     tree = parser.parse(code_b)
     query = language.query(qsrc)
     captures = query.captures(tree.root_node)
+
+    # Optional debug output for specific files
+    if os.getenv("CODEAGENT_DEBUG_FILE"):
+        if os.getenv("CODEAGENT_DEBUG_FILE").lower() in (filename or "").lower():
+            print(f"[codeagent] captures for {filename}:")
+            if USING_TSL_PACK:
+                for tag, nodes in captures.items():
+                    for node in nodes:
+                        ln = node.start_point[0] + 1
+                        text_preview = node.text.decode("utf-8", "ignore")[:80].replace(
+                            "\n", " "
+                        )
+                        print(f"  - {tag} @ L{ln}: {text_preview}")
+            else:
+                for node, tag in captures:
+                    ln = node.start_point[0] + 1
+                    text_preview = node.text.decode("utf-8", "ignore")[:80].replace(
+                        "\n", " "
+                    )
+                    print(f"  - {tag} @ L{ln}: {text_preview}")
+
     # Normalize to a flat list of (node, tag) like aider:
     if USING_TSL_PACK:
         all_caps = []
@@ -193,6 +214,26 @@ def parse_defs_and_refs(
     tree = parser.parse(code_b)
     query = language.query(qsrc)
     captures = query.captures(tree.root_node)
+
+    # Optional debug output for specific files
+    if os.getenv("CODEAGENT_DEBUG_FILE"):
+        if os.getenv("CODEAGENT_DEBUG_FILE").lower() in (path or "").lower():
+            print(f"[codeagent] captures for {path}:")
+            if USING_TSL_PACK:
+                for tag, nodes in captures.items():
+                    for node in nodes:
+                        ln = node.start_point[0] + 1
+                        text_preview = node.text.decode("utf-8", "ignore")[:80].replace(
+                            "\n", " "
+                        )
+                        print(f"  - {tag} @ L{ln}: {text_preview}")
+            else:
+                for node, tag in captures:
+                    ln = node.start_point[0] + 1
+                    text_preview = node.text.decode("utf-8", "ignore")[:80].replace(
+                        "\n", " "
+                    )
+                    print(f"  - {tag} @ L{ln}: {text_preview}")
 
     if USING_TSL_PACK:
         all_caps = []
@@ -252,6 +293,22 @@ def _materialize_defs_refs(
             if lo <= n_node.start_byte <= hi:
                 info["name"] = n_node.text.decode("utf-8", "ignore")
                 break
+
+    # Fallback for TS/TSX: decorated methods often lack @name.* captures.
+    # If still no name, scan the def node for a property/identifier child.
+    for (lo, hi), info in def_nodes.items():
+        if not info["name"] and lang in {"typescript", "tsx"}:
+            node = info["node"]
+            # breadth-first scan for first plausible identifier under the def
+            q = [node]
+            while q and not info["name"]:
+                cur = q.pop(0)
+                t = cur.type
+                if t in {"property_identifier", "identifier"}:
+                    info["name"] = cur.text.decode("utf-8", "ignore").strip()
+                    break
+                if cur.children:
+                    q.extend(cur.children)
 
     # attach doc to nearest following def (queries already bias adjacency)
     for dnode in doc_nodes:
