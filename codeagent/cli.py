@@ -57,8 +57,14 @@ def main():
     )
     grp.add_argument(
         "--loi-mark",
-        default=None,
-        help="Marker string to prefix highlighted anchor lines (default '▶').",
+        default="▶ ",
+        help="Marker string to prefix highlighted anchor lines (default '▶ ').",
+    )
+    grp.add_argument(
+        "--line-refs",
+        choices=["none", "start", "range"],
+        default="range",
+        help="Show file line refs: none | start (Lstart) | range (Lstart-Lend).",
     )
     p.add_argument(
         "--include", nargs="+", help="Glob patterns to include (e.g. **/*.ts **/*.py)"
@@ -105,7 +111,7 @@ def main():
         os.environ["CODEAGENT_LOI_MAX_LINES"] = str(args.loi_max_lines)
     if args.loi_hilite:
         os.environ["CODEAGENT_LOI_HILITE"] = "1"
-    if args.loi_mark is not None:
+    if args.loi_mark:
         os.environ["CODEAGENT_LOI_MARK"] = args.loi_mark
 
     if args.cmd == "index":
@@ -119,6 +125,84 @@ def main():
             os.environ["COCOINDEX_DATABASE_URL"], configure=_configure
         ) as pool:
             rows = search(pool, args.q or "", top_k=args.k, lang=args.lang)
+
+            budget = args.map_tokens or int(os.getenv("CODEAGENT_MAP_TOKENS", "0") or 0)
+            if budget > 0:
+                # Prefer project condenser if present
+                try:
+                    from .repomap.condense import condense_symbol_body
+
+                    def mk_snip(text, name):
+                        return condense_symbol_body(
+                            text or "",
+                            name,
+                            pre=args.loi_pre or 2,
+                            post=args.loi_post or 2,
+                            max_lines=args.loi_max_lines or 15,
+                            mark=args.loi_mark,
+                        )
+
+                except Exception:
+                    # Minimal fallback condenser: mark only the first line
+                    def mk_snip(text, name):
+                        lines = (text or "").splitlines()
+                        take = min(len(lines), args.loi_max_lines or 15)
+                        out = []
+                        for i, ln in enumerate(lines[:take]):
+                            if args.loi_mark:
+                                out.append((args.loi_mark if i == 0 else "") + ln)
+                            else:
+                                out.append(ln)
+                        if len(lines) > take:
+                            out.append("  … (truncated)")
+                        return "\n".join(out)
+
+                # Sort deterministically by our score, then by file, then by start line
+                rows.sort(
+                    key=lambda r: (
+                        -float(r.get("score") or 0),
+                        r["file"],
+                        r.get("start") or 0,
+                    )
+                )
+
+                used = 0
+                for r in rows:
+                    start = r.get("start")
+                    end = r.get("end")
+                    if (
+                        args.line_refs == "range"
+                        and start is not None
+                        and end is not None
+                        and end != start
+                    ):
+                        ref = f":L{start}-L{end}"
+                    elif args.line_refs == "start" and start is not None:
+                        ref = f":L{start}"
+                    elif args.line_refs != "none":
+                        ref = ""
+                    else:
+                        ref = ""
+
+                    block = [
+                        f"{r['file']}{ref}",
+                        f"  {r['symbol_kind']} {r['name']}",
+                    ]
+                    snippet = mk_snip(r.get("body") or "", r["name"])
+                    for line in snippet.splitlines():
+                        block.append(f"  {line}")
+                    block.append("")  # blank line between symbols
+
+                    text = ("\n".join(block)).rstrip() + "\n"
+                    # ≈token estimator
+                    est = max(1, len(text) // 4)
+                    if used + est > budget:
+                        break
+                    print(text, end="")
+                    used += est
+                return
+
+            # default list view (no budget)
             for r in rows:
                 head = f"[{r['score']:.3f}] {r['file']}:{r['start']}-{r['end']}  {r['symbol_kind']} {r['name']}  ({r['lang']})"
                 container = r.get("container") or ""

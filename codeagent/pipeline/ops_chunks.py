@@ -34,6 +34,7 @@ class Chunk:
     rank: float
     sha: str
     text: str
+    is_def: bool  # True for definitions, False for references
 
 
 @cocoindex.op.function()
@@ -154,6 +155,7 @@ def symbols_to_chunks(syms: str, filename: str, content: str) -> List[Chunk]:
             rank=0.0,  # PR will be filled by update_pagerank() after indexing
             sha=sha,
             text=text,
+            is_def=True,  # All chunks from defs are definitions
         )
         out.append(chunk)  # return dataclass instances (Struct rows)
     return out

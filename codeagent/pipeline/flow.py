@@ -66,6 +66,7 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
                 rank=ch["rank"],
                 sha=ch["sha"],
                 embedding=ch["embedding"],
+                is_def=ch["is_def"],  # Collect is_def field
             )
 
     out.export(

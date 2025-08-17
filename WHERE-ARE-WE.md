@@ -36,14 +36,19 @@ Absolutely—now that I’ve re-read the **right** CodeAgent snapshot, here’s 
 # Quick comparison (updated)
 
 | Area                     | Aider                                                | CodeAgent (now)                                                              | Status/Notes                                                              |
-| ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------- |---------------------------------------------------------------------------|
 | **Kind detection**       | From capture names in `*-tags.scm`                   | **Capture-first** normalization; no hard node-type tables required for kinds | ✅ Matches Aider’s approach.                                               |
 | **Method→class**         | Implicit via captured scopes                         | **Container from captures** (smallest enclosing `.class`)                    | ✅ Robust across grammars.                                                 |
 | **Repo map/LOI**         | “Critical lines” + token budget                      | **LOI condenser** + token budget (`CODEAGENT_MAP_TOKENS`)                    | ✅ Parity on behavior; env knobs available.                                |
 | **Token budget control** | `--map-tokens` (also env `AIDER_MAP_TOKENS`)         | Env only: `CODEAGENT_MAP_TOKENS` (+ `CODEAGENT_LOI_*`)                       | ⚠️ Suggest adding CLI `--map-tokens` for 1:1 UX. Aider docs: ([Aider][5]) |
 | **Ranking**              | Graph ranks to pick most relevant content            | File PageRank + symbol scores; persisted back to chunks                      | ✅ Equivalent strategy.                                                    |
-| **tags.scm sourcing**    | Ships many `*-tags.scm`, can pull from language pack | Loader supports override dir & packaged queries                              | ✅ Similar search path.                                                    |
+| **tags.scm sourcing**    | Ships many `*-tags.scm`, can pull from language pack | Loader supports override dir & packaged queries                              | ✅ somethings are missing.                                                 |
 
+## search differences
+codeagent query ranking path. Your output shows a type alias outranking the method, which means the current query flow is still embedding-first. Aider’s identifier lookups are not embedding-sorted; they surface definitions chosen from the repo-map using a graph ranking (PageRank) + token-budgeted “critical lines” approach. 
+Aider
+
+What’s still correct: Our comparison about Aider’s overall mechanics remains accurate:
 # What (if anything) to change to be truly 1:1 with Aider
 
 1. **Add CLI flag parity**
