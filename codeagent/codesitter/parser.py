@@ -54,42 +54,52 @@ def _filename_to_lang(path: str) -> Optional[str]:
     return LANG_BY_EXT.get(ext.lower())
 
 
-def _normalize_kind(lang: str, node_type: str, cap_kind: str, name_text: str) -> str:
+def _normalize_kind(_lang: str, _node_type: str, cap_kind: str, name_text: str) -> str:
     """
-    Aider-style: trust the capture. Derive kind from the capture tag itself.
+    Capture-first normalization.
+    Accepts tags like 'definition.function', 'name.definition.method', etc.
+    Returns a concise cross-language kind: 'function' | 'method' | 'class' | ...
     """
-    # Prefer @definition.* captures (eg, "definition.function" -> "function")
-    if cap_kind.startswith("definition."):
-        return cap_kind.split(".", 1)[1]
-    # If we somehow got a name.* capture here, fall back to its suffix.
-    if cap_kind.startswith("name.definition.") or cap_kind.startswith(
-        "name.reference."
-    ):
-        parts = cap_kind.split(".")
-        return parts[-1] if parts else cap_kind
-    # Fallback: last segment after a dot, else the raw tag.
-    return cap_kind.split(".", 1)[1] if "." in cap_kind else cap_kind
+    s = cap_kind.lower()
+    if s.startswith("definition."):
+        k = s.split("definition.", 1)[1] or "def"
+    elif s.startswith("name.definition."):
+        k = s.split("name.definition.", 1)[1] or "def"
+    else:
+        k = s.split(".", 1)[1] if "." in s else s
+    # Special-case common constructor labeling from community tags
+    if k == "method" and name_text == "constructor":
+        return "constructor"
+    return k
 
 
 def _enclosing_class_name(
-    def_start: int, def_end: int, def_nodes: dict[tuple[int, int], dict]
+    def_range: tuple[int, int], def_nodes: dict[tuple[int, int], dict], code_b: bytes
 ) -> Optional[str]:
     """
-    Find the nearest enclosing captured class definition by byte containment.
-    Works across languages without per-language node-type tables.
+    Find the smallest enclosing class *by capture*, not node.type.
+    We look for a def whose capture ends with '.class' and whose byte-range strictly contains def_range.
     """
-    candidates = []
-    for (lo, hi), info in def_nodes.items():
+    lo, hi = def_range
+    candidates: list[tuple[tuple[int, int], dict]] = []
+    for (clo, chi), info in def_nodes.items():
         cap = info.get("cap", "")
-        if cap.endswith(".class"):
-            if lo <= def_start and def_end <= hi and (lo, hi) != (def_start, def_end):
-                if info.get("name"):
-                    candidates.append((hi - lo, info["name"]))
+        if not isinstance(cap, str):
+            continue
+        if cap.endswith(".class") and clo <= lo and hi <= chi:
+            candidates.append(((clo, chi), info))
     if not candidates:
         return None
-    # Smallest span = nearest ancestor
-    candidates.sort(key=lambda x: x[0])
-    return candidates[0][1]
+    # Choose the tightest (minimum span) enclosing class
+    (clo, chi), info = min(candidates, key=lambda kv: kv[0][1] - kv[0][0])
+    nm = info.get("name")
+    if nm:
+        return nm
+    # If name wasn't attached yet, decode directly
+    node = info.get("node")
+    if node is not None:
+        return code_b[node.start_byte : node.end_byte].decode("utf-8", "ignore")
+    return None
 
 
 def parse_defs_and_refs_from_text(
@@ -282,7 +292,7 @@ def _materialize_defs_refs(
         raw_cap = info["cap"]
         name = info["name"] or ""
         kind = _normalize_kind(lang, node.type, raw_cap, name)
-        container = _enclosing_class_name(lo, hi, def_nodes)
+        container = _enclosing_class_name((lo, hi), def_nodes, code_b)
         defs.append(
             SymbolDef(
                 file=rel_path,
