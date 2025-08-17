@@ -74,32 +74,28 @@ def _normalize_kind(_lang: str, _node_type: str, cap_kind: str, name_text: str) 
 
 
 def _enclosing_class_name(
-    def_range: tuple[int, int], def_nodes: dict[tuple[int, int], dict], code_b: bytes
+    def_range: tuple[int, int], def_nodes: dict[tuple[int, int], dict]
 ) -> Optional[str]:
     """
-    Find the smallest enclosing class *by capture*, not node.type.
-    We look for a def whose capture ends with '.class' and whose byte-range strictly contains def_range.
+    Find smallest enclosing captured class: any def whose capture ends with '.class'
+    whose byte span strictly contains def_range. Language-agnostic.
     """
     lo, hi = def_range
-    candidates: list[tuple[tuple[int, int], dict]] = []
+    best = None
+    best_span = None
     for (clo, chi), info in def_nodes.items():
-        cap = info.get("cap", "")
-        if not isinstance(cap, str):
-            continue
-        if cap.endswith(".class") and clo <= lo and hi <= chi:
-            candidates.append(((clo, chi), info))
-    if not candidates:
-        return None
-    # Choose the tightest (minimum span) enclosing class
-    (clo, chi), info = min(candidates, key=lambda kv: kv[0][1] - kv[0][0])
-    nm = info.get("name")
-    if nm:
-        return nm
-    # If name wasn't attached yet, decode directly
-    node = info.get("node")
-    if node is not None:
-        return code_b[node.start_byte : node.end_byte].decode("utf-8", "ignore")
-    return None
+        cap = (info.get("cap") or "").lower()
+        if (
+            cap.endswith(".class")
+            and clo <= lo
+            and hi <= chi
+            and (clo, chi) != (lo, hi)
+        ):
+            span = chi - clo
+            if best_span is None or span < best_span:
+                best_span = span
+                best = info.get("name")
+    return best
 
 
 def parse_defs_and_refs_from_text(
@@ -292,7 +288,7 @@ def _materialize_defs_refs(
         raw_cap = info["cap"]
         name = info["name"] or ""
         kind = _normalize_kind(lang, node.type, raw_cap, name)
-        container = _enclosing_class_name((lo, hi), def_nodes, code_b)
+        container = _enclosing_class_name((lo, hi), def_nodes)
         defs.append(
             SymbolDef(
                 file=rel_path,

@@ -120,9 +120,13 @@ def main():
         ) as pool:
             rows = search(pool, args.q or "", top_k=args.k, lang=args.lang)
             for r in rows:
-                print(
-                    f"[{r['score']:.3f}] {r['file']}:{r['start']}-{r['end']}  {r['symbol_kind']} {r['name']}  ({r['lang']})"
-                )
+                head = f"[{r['score']:.3f}] {r['file']}:{r['start']}-{r['end']}  {r['symbol_kind']} {r['name']}  ({r['lang']})"
+                container = r.get("container") or ""
+                if container:
+                    print(head)
+                    print(f"  container → {container}")
+                else:
+                    print(head)
                 print(" ", r["header"])
                 body = r["body"]
                 print(" ", (body[:200] + "…") if len(body) > 200 else body)
