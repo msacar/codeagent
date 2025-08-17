@@ -184,7 +184,6 @@ def parse_defs_and_refs_from_text(
                         "\n", " "
                     )
                     print(f"  - {tag} @ L{ln}: {text_preview}")
-
     # Normalize to a flat list of (node, tag) like aider:
     if USING_TSL_PACK:
         all_caps = []
