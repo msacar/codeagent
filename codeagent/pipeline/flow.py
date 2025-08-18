@@ -5,6 +5,7 @@ from cocoindex import utils as cx_utils
 
 from .ops_parse import parse_file_to_symbols
 from .ops_chunks import symbols_to_chunks
+from .ops_summarize import summarize_chunk, extract_summary_field
 from psycopg_pool import ConnectionPool
 from .pagerank_update import update_pagerank
 
@@ -50,7 +51,39 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
             symbols_to_chunks, filename=file["filename"], content=file["content"]
         )
         with file["chunks"].row() as ch:
+            # 1) mevcut code embedding
             ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
+
+            # 2) summary JSON (Ollama)
+            ch["summary_json"] = ch["text"].transform(
+                summarize_chunk,
+                header=ch["header"],
+                body=ch["body"],
+                file=file["filename"],
+                start=ch["start_line"],
+                end=ch["end_line"],
+            )
+
+            # 3) summary alanlarını çıkar
+            ch["summary_text"] = ch["summary_json"].transform(
+                extract_summary_field, key="summary"
+            )
+            ch["summary_caps"] = ch["summary_json"].transform(
+                extract_summary_field, key="capabilities"
+            )
+            ch["summary_idents"] = ch["summary_json"].transform(
+                extract_summary_field, key="identifiers"
+            )
+            ch["summary_conf"] = ch["summary_json"].transform(
+                extract_summary_field, key="confidence"
+            )
+            ch["content_sha"] = ch["summary_json"].transform(
+                extract_summary_field, key="content_sha"
+            )
+
+            # 4) summary embedding
+            ch["summary_embedding"] = ch["summary_text"].call(chunk_text_to_embedding)
+
             out.collect(
                 id=ch["id"],
                 file=file["filename"],
@@ -65,8 +98,16 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
                 deps=ch["deps"],
                 rank=ch["rank"],
                 sha=ch["sha"],
+                text=ch["text"],
+                is_def=ch["is_def"],
+                # NEW: summary fields
+                summary_text=ch["summary_text"],
+                summary_caps=ch["summary_caps"],
+                summary_idents=ch["summary_idents"],
+                summary_conf=ch["summary_conf"],
+                content_sha=ch["content_sha"],
                 embedding=ch["embedding"],
-                is_def=ch["is_def"],  # Collect is_def field
+                summary_embedding=ch["summary_embedding"],
             )
 
     out.export(
@@ -77,7 +118,11 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
             cocoindex.VectorIndexDef(
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
+            ),
+            cocoindex.VectorIndexDef(
+                field_name="summary_embedding",
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+            ),
         ],
     )
 
@@ -98,5 +143,21 @@ def run_index():
             table = cx_utils.get_target_default_name(build_index, "code_chunks")
             touched = update_pagerank(pool, table)
             print(f"Updated PageRank on {touched} chunk rows.")
+
+            # Garbage collect stale chunks
+            with pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    WITH latest AS (
+                      SELECT file, MAX(sha) AS latest_sha
+                      FROM {table}
+                      GROUP BY file
+                    )
+                    DELETE FROM {table} c
+                    USING latest l
+                    WHERE c.file = l.file AND c.sha <> l.latest_sha;
+                """
+                )
+                print(f"Garbage-collected stale chunk rows: {cur.rowcount or 0}")
         except Exception as e:
             print("[WARN] PageRank update skipped:", e)
