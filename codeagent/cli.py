@@ -29,8 +29,8 @@ def main():
     grp.add_argument(
         "--map-tokens",
         type=int,
-        default=None,
-        help="Approx token budget for condensed bodies (similar to Aider's --map-tokens).",
+        default=int(os.getenv("CODEAGENT_MAP_TOKENS", "1200")),
+        help="Approx token budget for condensed bodies (defaults to CODEAGENT_MAP_TOKENS or 1200).",
     )
     grp.add_argument(
         "--loi-pre",
@@ -92,8 +92,8 @@ def main():
     p.add_argument(
         "--top-files",
         type=int,
-        default=25,
-        help="Max files to include before token budget is applied",
+        default=int(os.getenv("CODEAGENT_TOP_FILES", "25")),
+        help="Max files to include before token budget is applied (defaults to CODEAGENT_TOP_FILES or 25)",
     )
     args = p.parse_args()
 
@@ -281,9 +281,17 @@ def main():
             )
             sys.exit(2)
 
+        from .pipeline.batch_pagerank import BatchPageRankProcessor
+
+        # Create builder with optional processor for better performance
         builder = ContextMapBuilder(
             args.root, include=args.include, exclude=args.exclude
         )
+
+        # Attach processor with include/exclude patterns
+        # The processor will respect the same patterns when computing PageRank
+        if args.root:
+            builder.processor = BatchPageRankProcessor(args.root)
 
         print("Building context map...")
         context = builder.build_context_map(

@@ -3,6 +3,7 @@ Chat-aware context map using personalized PageRank.
 Optimizes the repo map for the current chat context, similar to Aider's approach.
 """
 
+import os
 import re
 from typing import Dict, List, Set, Optional
 from pathlib import Path
@@ -27,6 +28,7 @@ class ContextMapBuilder:
         root_dir: str,
         include: Optional[List[str]] = None,
         exclude: Optional[List[str]] = None,
+        processor=None,
     ):
         self.root_dir = root_dir
         self._include = include
@@ -36,6 +38,7 @@ class ContextMapBuilder:
         # Get top files from database on initialization
         self._top_files = None
         self._top_symbols = None
+        self.processor = processor
 
     def _extract_mentions(self, prompt: str) -> Set[str]:
         """Extract file paths and symbol names mentioned in the prompt."""
@@ -83,8 +86,8 @@ class ContextMapBuilder:
         self,
         prompt: str = "",
         chat_files: Optional[List[str]] = None,
-        map_tokens: int = 1000,
-        top_files: int = 25,
+        map_tokens: Optional[int] = None,
+        top_files: Optional[int] = None,
     ) -> List[dict]:
         """
         Build a context map optimized for the current chat.
@@ -98,6 +101,18 @@ class ContextMapBuilder:
         Returns:
             List of dicts with file, rank, and highlights
         """
+        # Defaults if caller didn't provide them
+        if map_tokens is None:
+            map_tokens = int(os.getenv("CODEAGENT_MAP_TOKENS", "1200"))
+        if top_files is None:
+            top_files = int(os.getenv("CODEAGENT_TOP_FILES", "25"))
+
+        # Lazy-init processor if caller didn't attach one
+        if self.processor is None:
+            from codeagent.pipeline.batch_pagerank import BatchPageRankProcessor
+
+            self.processor = BatchPageRankProcessor(self.root_dir)
+
         # Process directory to build graph
         self.processor.process_directory(
             patterns=self._include, exclude_patterns=self._exclude
