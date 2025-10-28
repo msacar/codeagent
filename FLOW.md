@@ -170,7 +170,7 @@ Future niceties (easy to add later):
 
 # 9) What you can tweak per project
 
-* **Queries**: adjust SCMs to capture more symbol kinds (enums, interfaces, types, exports, etc.). You already have JS/TS/Py from Aider; we can add more.
+* **Queries**: we cannot to this due to hard to maintain !!! -> adjust SCMs to capture more symbol kinds (enums, interfaces, types, exports, etc.). You already have JS/TS/Py from Aider; we can add more.
 * **Chunking policy**: change the context padding heuristics by kind, or include sibling nodes.
 * **Embedding**: switch models, add a code-aware re-ranker later.
 * **Storage**: add extra indexes (filename, lang, symbol\_kind) for fast filters.

@@ -119,15 +119,6 @@ You already have Tree-sitter and CocoIndex. Port Aider’s approach as a **parse
 * `repomap.py` shows the whole pipeline: load queries → capture defs/refs → cache → graph rank → render context. The specific lines doing this are the ones I highlighted above (query load + captures + Tag emission + backfill + ranking).   &#x20;
 * `main.py` and `base_coder.py` are mostly app wiring; `base_coder` is where the **repo map** object is created and later added to messages, but the Tree-sitter heavy-lifting is in `repomap.py`. (Creation happens inside the coder when model supports repo maps.)&#x20;
 
-# Want me to wire a minimal, drop-in **CocoIndex parse op**?
-
-If you share which languages you want first (say: **TypeScript + Python**), I’ll generate:
-
-* A tiny `load_query(lang)` that prefers **tree-sitter-language-pack** queries (like Aider’s `get_scm_fname`) and falls back cleanly.
-* A `parse_file_to_tags(file)` function exactly matching Aider’s `def/ref` logic.
-* A CocoIndex **transform** that takes those tags, extracts the **definition spans** (for bodies), and emits **chunk docs** ready for your embedding op.
-
-Also, if you want me to inspect a specific `*-tags.scm` you uploaded (e.g., your `typescript-tags.scm`) for capture names so we map them correctly, say the word and I’ll read it and align the parser to those captures.
 
 [1]: https://aider.chat/2023/10/22/repomap.html?utm_source=chatgpt.com "Building a better repository map with tree sitter"
 [2]: https://aider.chat/docs/languages.html?utm_source=chatgpt.com "Supported languages"
