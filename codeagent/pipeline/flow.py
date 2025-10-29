@@ -29,6 +29,7 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
             path=root_dir,
             included_patterns=["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.py"],
             excluded_patterns=[
+                "**/cdk.out/**",
                 "**/node_modules/**",
                 "**/dist/**",
                 "**/build/**",
@@ -54,35 +55,35 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
             # 1) mevcut code embedding
             ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
 
-            # 2) summary JSON (Ollama)
-            ch["summary_json"] = ch["text"].transform(
-                summarize_chunk,
-                header=ch["header"],
-                body=ch["body"],
-                file=file["filename"],
-                start=ch["start_line"],
-                end=ch["end_line"],
-            )
-
-            # 3) summary alanlarını çıkar
-            ch["summary_text"] = ch["summary_json"].transform(
-                extract_summary_field, key="summary"
-            )
-            ch["summary_caps"] = ch["summary_json"].transform(
-                extract_summary_field, key="capabilities"
-            )
-            ch["summary_idents"] = ch["summary_json"].transform(
-                extract_summary_field, key="identifiers"
-            )
-            ch["summary_conf"] = ch["summary_json"].transform(
-                extract_summary_field, key="confidence"
-            )
-            ch["content_sha"] = ch["summary_json"].transform(
-                extract_summary_field, key="content_sha"
-            )
-
-            # 4) summary embedding
-            ch["summary_embedding"] = ch["summary_text"].call(chunk_text_to_embedding)
+            # # 2) summary JSON (Ollama)
+            # ch["summary_json"] = ch["text"].transform(
+            #     summarize_chunk,
+            #     header=ch["header"],
+            #     body=ch["body"],
+            #     file=file["filename"],
+            #     start=ch["start_line"],
+            #     end=ch["end_line"],
+            # )
+            #
+            # # 3) summary alanlarını çıkar
+            # ch["summary_text"] = ch["summary_json"].transform(
+            #     extract_summary_field, key="summary"
+            # )
+            # ch["summary_caps"] = ch["summary_json"].transform(
+            #     extract_summary_field, key="capabilities"
+            # )
+            # ch["summary_idents"] = ch["summary_json"].transform(
+            #     extract_summary_field, key="identifiers"
+            # )
+            # ch["summary_conf"] = ch["summary_json"].transform(
+            #     extract_summary_field, key="confidence"
+            # )
+            # ch["content_sha"] = ch["summary_json"].transform(
+            #     extract_summary_field, key="content_sha"
+            # )
+            #
+            # # 4) summary embedding
+            # ch["summary_embedding"] = ch["summary_text"].call(chunk_text_to_embedding)
 
             out.collect(
                 id=ch["id"],
@@ -101,13 +102,13 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
                 text=ch["text"],
                 is_def=ch["is_def"],
                 # NEW: summary fields
-                summary_text=ch["summary_text"],
-                summary_caps=ch["summary_caps"],
-                summary_idents=ch["summary_idents"],
-                summary_conf=ch["summary_conf"],
-                content_sha=ch["content_sha"],
+                # summary_text=ch["summary_text"],
+                # summary_caps=ch["summary_caps"],
+                # summary_idents=ch["summary_idents"],
+                # summary_conf=ch["summary_conf"],
+                # content_sha=ch["content_sha"],
                 embedding=ch["embedding"],
-                summary_embedding=ch["summary_embedding"],
+                # summary_embedding=ch["summary_embedding"],
             )
 
     out.export(

@@ -54,7 +54,7 @@ Instructions:
 """
 
 
-@cocoindex.op.function()
+#@cocoindex.op.function()
 def summarize_chunk(
     text: str, header: str, body: str, file: str, start: int, end: int
 ) -> str:

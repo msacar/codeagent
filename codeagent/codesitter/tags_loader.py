@@ -2,7 +2,10 @@ from __future__ import annotations
 import os
 from importlib import resources
 from typing import Optional, Tuple
-from grep_ast.tsl import get_language, get_parser
+# todo why does this uses gre_ast ?
+# todo get_language and  get_parser can be used inside tree_sitter_language_pack ?
+# from grep_ast.tsl import get_language, get_parser
+from tree_sitter_language_pack import get_language, get_parser
 
 _QUERIES_ENV = "CODEAGENT_QUERIES_DIR"
 DEBUG_TAGS = os.getenv("CODEAGENT_DEBUG_TAGS", "").lower() in ("1", "true", "yes", "on")
