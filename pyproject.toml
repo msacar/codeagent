@@ -19,6 +19,13 @@ dependencies = [
   "tiktoken>=0.7.0",
   "watchfiles>=0.22.0",
   "networkx>=3.2",
+  # QWEN THING
+  # --- Embedding / Reranking ---
+  "sentence-transformers>=3.0.1",
+  "FlagEmbedding>=1.2.10",
+  # torch CPU is fine; MPS (Apple Silicon) or CUDA will accelerate drastically
+  "torch>=2.3",
+  # QWEN THING ENDS
 ]
 
 

@@ -2,23 +2,44 @@ import os
 from dotenv import load_dotenv
 import cocoindex
 from cocoindex import utils as cx_utils
+from sentence_transformers import SentenceTransformer
+import torch
 
 from .ops_parse import parse_file_to_symbols
 from .ops_chunks import symbols_to_chunks
 from .ops_summarize import summarize_chunk, extract_summary_field
 from psycopg_pool import ConnectionPool
 from .pagerank_update import update_pagerank
+import numpy as np
+from numpy.typing import NDArray
+
+# Pick device & dtype once
+_has_cuda = torch.cuda.is_available()
+_has_mps = getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+_device = "cuda" if _has_cuda else ("mps" if _has_mps else "cpu")
+_bge_kwargs = {"dtype": torch.float16} if _device in ("cuda", "mps") else {}
 
 
 @cocoindex.transform_flow()
-def chunk_text_to_embedding(
+def chunk_text_to_embedding_bge(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
+) -> cocoindex.DataSlice[cocoindex.Vector[np.float32, 1536]]:
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
+            model="BAAI/bge-code-v1",  # trust_remote_code is handled by SentenceTransformers
         )
     )
+
+# do not need for now !
+# @cocoindex.transform_flow()
+# def chunk_text_to_embedding(
+#     text: cocoindex.DataSlice[str],
+# ) -> cocoindex.DataSlice[list[float]]:
+#     return text.transform(
+#         cocoindex.functions.SentenceTransformerEmbed(
+#             model="sentence-transformers/all-MiniLM-L6-v2"
+#         )
+#     )
 
 
 @cocoindex.flow_def(name="CodeIndex")
@@ -53,7 +74,9 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
         )
         with file["chunks"].row() as ch:
             # 1) mevcut code embedding
-            ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
+            #ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
+            # 2) BGE-Code-v1 code embedding (1536-d)
+            ch["embedding"] = ch["text"].call(chunk_text_to_embedding_bge)
 
             # # 2) summary JSON (Ollama)
             # ch["summary_json"] = ch["text"].transform(
@@ -107,26 +130,33 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
                 # summary_idents=ch["summary_idents"],
                 # summary_conf=ch["summary_conf"],
                 # content_sha=ch["content_sha"],
-                embedding=ch["embedding"],
+                #embedding=ch["embedding"],
+                embedding_bge=ch["embedding_bge"],
                 # summary_embedding=ch["summary_embedding"],
             )
+
+    embedding_def = cocoindex.VectorIndexDef(
+        field_name="embedding",
+        metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        method=cocoindex.HnswVectorIndexMethod(ef_construction=128, m=16),
+    )
 
     out.export(
         "code_chunks",
         cocoindex.targets.Postgres(),
         primary_key_fields=["id"],
         vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            ),
-            cocoindex.VectorIndexDef(
-                field_name="summary_embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            ),
+            # cocoindex.VectorIndexDef(
+            #     field_name="embedding",
+            #     metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+            # ),
+            # cocoindex.VectorIndexDef(
+            #     field_name="summary_embedding",
+            #     metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+            # ),
+            embedding_def
         ],
     )
-
 
 def run_index():
     load_dotenv()
