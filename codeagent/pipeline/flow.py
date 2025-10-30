@@ -29,6 +29,15 @@ def chunk_text_to_embedding_bge(
             model="BAAI/bge-code-v1",  # trust_remote_code is handled by SentenceTransformers
         )
     )
+@cocoindex.transform_flow()
+def chunk_text_to_embedding_bge(
+    text: cocoindex.DataSlice[str],
+) -> cocoindex.DataSlice[cocoindex.Vector[np.float32, 1536]]:
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="voyage-code-3",  # trust_remote_code is handled by SentenceTransformers
+        )
+    )
 
 # do not need for now !
 # @cocoindex.transform_flow()
@@ -131,7 +140,7 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
                 # summary_conf=ch["summary_conf"],
                 # content_sha=ch["content_sha"],
                 #embedding=ch["embedding"],
-                embedding_bge=ch["embedding_bge"],
+                embedding=ch["embedding"],
                 # summary_embedding=ch["summary_embedding"],
             )
 
