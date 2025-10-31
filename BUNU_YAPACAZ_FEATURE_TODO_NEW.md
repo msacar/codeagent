@@ -21,3 +21,20 @@ Short answer: **yes—BGE-Code-v1 is a good fit** for retrieval to support featu
 * ⚠️ Not enough alone for: **exhaustive** rename/refactor or subtle bug hunts—pair it with symbol graphs and a reranker (above) to avoid misses. ([code-rag-bench.github.io][4])
 
 If you want, I can sketch the exact code changes for your `codeagent` embedder + a tiny rerank stage that plugs into your CocoIndex flow.
+
+bu konuda düşünceler mevcut :D 
+
+-- pgvector + HNSW
+CREATE EXTENSION IF NOT EXISTS vector;
+-- Your embedding column must match the model dim, e.g. 1536 for bge-code-v1
+-- ALTER TABLE codeindex__code_chunks ALTER COLUMN embedding TYPE vector(1536);
+
+-- HNSW index for cosine
+CREATE INDEX IF NOT EXISTS code_chunks_embedding_hnsw
+ON codeindex__code_chunks
+USING hnsw (embedding vector_cosine_ops);
+
+-- Lexical (pg_trgm)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS code_chunks_text_gin
+ON codeindex__code_chunks USING GIN (text gin_trgm_ops);

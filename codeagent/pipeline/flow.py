@@ -13,31 +13,44 @@ from .pagerank_update import update_pagerank
 import numpy as np
 from numpy.typing import NDArray
 
-# Pick device & dtype once
-_has_cuda = torch.cuda.is_available()
-_has_mps = getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
-_device = "cuda" if _has_cuda else ("mps" if _has_mps else "cpu")
-_bge_kwargs = {"dtype": torch.float16} if _device in ("cuda", "mps") else {}
+# Embedding set-up (one active model -> one column)
+# -------------------------------------------------------------------------------------------------
+# Env controls
+_EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "bge").lower()  # "bge" | "voyage"
+# Model ids:
+#  - BGE: Hugging Face id (e.g., "BAAI/bge-code-v1")
+#  - Voyage: API model name (e.g., "voyage-code-3")
+_EMBED_MODEL = os.getenv("EMBED_MODEL") or ("BAAI/bge-code-v1" if _EMBED_PROVIDER == "bge" else "voyage-code-3")
 
+# Voyage supports 512 / 1024 / 2048 output dims. We default to 1024 if not provided.
+_EMBED_DIM = int(os.getenv("EMBED_DIM")) if os.getenv("EMBED_DIM") else (None if _EMBED_PROVIDER == "bge" else 1024)
 
 @cocoindex.transform_flow()
-def chunk_text_to_embedding_bge(
+def embed_with_bge(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[cocoindex.Vector[np.float32, 1536]]:
+) -> cocoindex.DataSlice[list[float]]:
+    # Local sentence-transformers model from Hugging Face cache
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="BAAI/bge-code-v1",  # trust_remote_code is handled by SentenceTransformers
+            model=_EMBED_MODEL,  # e.g., "BAAI/bge-code-v1"
         )
     )
+
 @cocoindex.transform_flow()
-def chunk_text_to_embedding_bge(
+def embed_with_voyage(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[cocoindex.Vector[np.float32, 1536]]:
+) -> cocoindex.DataSlice[list[float]]:
+    # Remote Voyage API (requires VOYAGE_API_KEY); output_dimension must be 512/1024/2048
+    print(_EMBED_DIM)
     return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="voyage-code-3",  # trust_remote_code is handled by SentenceTransformers
+        cocoindex.functions.EmbedText(
+            api_type=cocoindex.LlmApiType.VOYAGE,
+            model=_EMBED_MODEL,           # e.g., "voyage-code-3"
+            task_type="document",
+            output_dimension=_EMBED_DIM or 1024,
         )
     )
+
 
 # do not need for now !
 # @cocoindex.transform_flow()
@@ -85,7 +98,13 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
             # 1) mevcut code embedding
             #ch["embedding"] = ch["text"].call(chunk_text_to_embedding)
             # 2) BGE-Code-v1 code embedding (1536-d)
-            ch["embedding"] = ch["text"].call(chunk_text_to_embedding_bge)
+            # Exactly ONE active embedding column named 'embedding'
+            if _EMBED_PROVIDER == "bge":
+                ch["embedding"] = ch["text"].call(embed_with_bge)
+            elif _EMBED_PROVIDER == "voyage":
+                ch["embedding"] = ch["text"].call(embed_with_voyage)
+            else:
+                raise ValueError(f"Unsupported EMBED_PROVIDER: {_EMBED_PROVIDER}")
 
             # # 2) summary JSON (Ollama)
             # ch["summary_json"] = ch["text"].transform(
