@@ -10,10 +10,9 @@ from psycopg.rows import dict_row
 
 # Optional deps (only used when enabled):
 # - SentenceTransformers for local BGE encode
-# - voyageai for remote Voyage encode
-# - FlagEmbedding for reranker
+# - FlagEmbedding for BGE cross-encoder reranker
+# - requests for Voyage REST (required if EMBED_PROVIDER/RERANK_PROVIDER = "voyage")
 _BGE_AVAILABLE = False
-_VOYAGE_AVAILABLE = False
 _RERANK_AVAILABLE = False
 
 try:
@@ -23,16 +22,15 @@ except Exception:
     pass
 
 try:
-    import voyageai  # type: ignore
-    _VOYAGE_AVAILABLE = True
-except Exception:
-    pass
-
-try:
     from FlagEmbedding import FlagReranker  # type: ignore
     _RERANK_AVAILABLE = True
 except Exception:
     pass
+
+try:
+    import requests  # type: ignore
+except Exception as e:  # hard error here only when voyage is requested later
+    requests = None  # defer failure until actually used
 
 
 # -----------------------------
@@ -44,13 +42,22 @@ EMBED_MODEL = os.getenv("EMBED_MODEL") or (
     "BAAI/bge-code-v1" if EMBED_PROVIDER == "bge" else "voyage-code-3"
 )
 
-# Dimensions: bge-code-v1 = 1536; Voyage defaults to 1024 unless you pick a 1536 model.
-# (Voyage docs: default 1024; see their model list.)
+# Dimensions: bge-code-v1 = 1536; Voyage-code-3 default = 1024 (can be 256/512/1024/1536/2048 depending on model)
 EMBED_DIM = int(os.getenv("EMBED_DIM") or (1536 if EMBED_PROVIDER == "bge" else 1024))
 
 # Reranker
 ENABLE_RERANK = os.getenv("RERANK", "0") in ("1", "true", "True")
-RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")  # multilingual, strong for code/text
+# Which provider powers rerank? "flag" (BGE cross-encoder) or "voyage" (REST API)
+RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "flag").lower()
+# Default model per provider (override with RERANK_MODEL if you want)
+RERANK_MODEL = os.getenv("RERANK_MODEL") or (
+    "BAAI/bge-reranker-v2-m3" if RERANK_PROVIDER == "flag" else "rerank-2.5-lite"
+)
+
+# Voyage REST
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
+VOYAGE_BASE = os.getenv("VOYAGE_BASE", "https://api.voyageai.com/v1")
+VOYAGE_TIMEOUT = float(os.getenv("VOYAGE_TIMEOUT", "60"))  # seconds
 
 # DB
 PG_DSN = os.getenv("COCOINDEX_DATABASE_URL")
@@ -62,10 +69,8 @@ ID_COL = os.getenv("RETRIEVER_ID_COL", "id")
 # Hybrid recall knobs
 VEC_TOPK = int(os.getenv("RETRIEVER_VEC_TOPK", "100"))
 LEX_TOPK = int(os.getenv("RETRIEVER_LEX_TOPK", "100"))
-MERGE_K  = int(os.getenv("RETRIEVER_MERGE_K", "200"))
-
-# Expansion knobs
-EXPAND_DEPS = os.getenv("RETRIEVER_EXPAND_DEPS", "1") in ("1","true","True")
+MERGE_K = int(os.getenv("RETRIEVER_MERGE_K", "200"))
+EXPAND_DEPS = os.getenv("RETRIEVER_EXPAND_DEPS", "0") in ("1", "true", "True")
 EXPAND_LIMIT = int(os.getenv("RETRIEVER_EXPAND_LIMIT", "100"))
 
 # BGE query instruction for NL queries (recommended by FlagEmbedding):
@@ -75,10 +80,11 @@ BGE_QUERY_PREFIX = os.getenv(
     "Represent the question for retrieving relevant documents:"
 )
 
+
 @dataclass
 class Hit:
     id: str
-    score: float              # larger is better (we normalize cosine distance -> similarity)
+    score: float              # larger is better (we convert distances -> similarity)
     file: Optional[str]
     lang: Optional[str]
     name: Optional[str]
@@ -86,43 +92,36 @@ class Hit:
     header: Optional[str]
     body: Optional[str]
 
+
 # -----------------------------
 # Embedding providers
 # -----------------------------
-_bge_model: Optional[SentenceTransformer] = None
-_voyage_client: Optional["voyageai.Client"] = None
-_reranker: Optional[FlagReranker] = None
+_bge_model: Optional["SentenceTransformer"] = None
+_reranker: Optional["FlagReranker"] = None
 
 
-def _lazy_init_bge() -> SentenceTransformer:
+def _lazy_init_bge() -> "SentenceTransformer":
     global _bge_model
     if _bge_model is None:
         if not _BGE_AVAILABLE:
             raise RuntimeError("SentenceTransformers not installed for BGE provider.")
         # fp16 on cuda/mps if available
         import torch
-        use_fp16 = torch.cuda.is_available() or (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+        use_fp16 = torch.cuda.is_available() or (
+            getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+        )
         _bge_model = SentenceTransformer(
             EMBED_MODEL,
             trust_remote_code=True,
-            model_kwargs={"dtype": torch.float16} if use_fp16 else {}
+            device="cuda" if torch.cuda.is_available()
+            else ("mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else "cpu"),
         )
+        if use_fp16:
+            _bge_model = _bge_model.half()
     return _bge_model
 
 
-def _lazy_init_voyage() -> "voyageai.Client":
-    global _voyage_client
-    if _voyage_client is None:
-        if not _VOYAGE_AVAILABLE:
-            raise RuntimeError("`voyageai` package not installed for Voyage provider.")
-        api_key = os.getenv("VOYAGE_API_KEY")
-        if not api_key:
-            raise RuntimeError("VOYAGE_API_KEY is not set.")
-        _voyage_client = voyageai.Client(api_key=api_key)
-    return _voyage_client
-
-
-def _lazy_init_reranker() -> FlagReranker:
+def _lazy_init_reranker() -> "FlagReranker":
     global _reranker
     if _reranker is None:
         if not _RERANK_AVAILABLE:
@@ -132,11 +131,91 @@ def _lazy_init_reranker() -> FlagReranker:
     return _reranker
 
 
+# -----------------------------
+# Voyage REST helpers (no SDK)
+# -----------------------------
+def _check_requests_ready():
+    if requests is None:
+        raise RuntimeError("`requests` is required for Voyage REST but is not installed.")
+    if not VOYAGE_API_KEY:
+        raise RuntimeError("VOYAGE_API_KEY is not set for Voyage REST.")
+
+
+def _voyage_embed_http(texts: List[str], model: str, input_type: str) -> List[List[float]]:
+    _check_requests_ready()
+    url = f"{VOYAGE_BASE}/embeddings"
+    headers = {
+        "Authorization": f"Bearer {VOYAGE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "input": texts,
+        "model": model,
+        "input_type": input_type,  # usually "query" for NL; "document" for code/snippets
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=VOYAGE_TIMEOUT)
+    resp.raise_for_status()
+    data = resp.json()
+    # data["data"] is a list of rows with "embedding"
+    return [row["embedding"] for row in data["data"]]
+
+
+def _voyage_rerank_http(query_text: str, docs: List[str], model: str) -> List[Tuple[int, float]]:
+    _check_requests_ready()
+    url = f"{VOYAGE_BASE}/rerank"
+    headers = {
+        "Authorization": f"Bearer {VOYAGE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "query": query_text,
+        "documents": docs,
+        "model": model,
+        "top_k": len(docs),
+        # "return_documents": False,  # default; uncomment if you ever want explicit control
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=VOYAGE_TIMEOUT)
+
+    # Raise on HTTP error but keep the server's JSON/body visible
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        try:
+            err = resp.json()
+        except Exception as ex:
+            err = resp.text
+            print("here some error occured")
+        raise RuntimeError(f"Voyage rerank HTTP {resp.status_code}: {err}") from e
+
+    data = resp.json()
+    # REST returns 'data'; SDK examples use 'results'. Support both.
+    items = None
+    if isinstance(data, dict):
+        if "data" in data and isinstance(data["data"], list):
+            items = data["data"]
+        elif "results" in data and isinstance(data["results"], list):
+            items = data["results"]
+
+    if items is None:
+        raise RuntimeError(f"Voyage rerank: unexpected payload keys {list(data) if isinstance(data, dict) else type(data)}")
+
+    # Items typically arrive sorted by descending relevance_score; keep order
+    out: List[Tuple[int, float]] = []
+    for it in items:
+        idx = it.get("index")
+        score = it.get("relevance_score")
+        if idx is None or score is None:
+            # Skip malformed entries rather than crashing the whole query
+            continue
+        out.append((int(idx), float(score)))
+    return out
+
+
 def _embed_nl_query(text: str) -> List[float]:
     """
     Natural-language query mode.
     - BGE: prepend instruction per FlagEmbedding docs.
-    - Voyage: plain text; provider handles prompt internally.
+    - Voyage: REST call; use input_type="query".
     """
     if EMBED_PROVIDER == "bge":
         m = _lazy_init_bge()
@@ -144,24 +223,21 @@ def _embed_nl_query(text: str) -> List[float]:
         vec = m.encode([q], normalize_embeddings=True)[0]
         return vec.tolist()
     elif EMBED_PROVIDER == "voyage":
-        client = _lazy_init_voyage()
-        # Voyage embeddings API: remote vector of (typically) 1024/1536 dims.
-        resp = client.embeddings.create(model=EMBED_MODEL, input=[text])
-        return resp.data[0].embedding  # list[float]
+        vecs = _voyage_embed_http([text], model=EMBED_MODEL, input_type="query")
+        return vecs[0]
     else:
         raise RuntimeError(f"Unknown EMBED_PROVIDER={EMBED_PROVIDER}")
 
 
 def _embed_code_anchor(code: str) -> List[float]:
-    """Code→code mode: no instruction, feed the snippet directly."""
+    """Code→code mode: no instruction for BGE; Voyage input_type='document'."""
     if EMBED_PROVIDER == "bge":
         m = _lazy_init_bge()
         vec = m.encode([code], normalize_embeddings=True)[0]
         return vec.tolist()
     elif EMBED_PROVIDER == "voyage":
-        client = _lazy_init_voyage()
-        resp = client.embeddings.create(model=EMBED_MODEL, input=[code])
-        return resp.data[0].embedding
+        vecs = _voyage_embed_http([code], model=EMBED_MODEL, input_type="document")
+        return vecs[0]
     else:
         raise RuntimeError(f"Unknown EMBED_PROVIDER={EMBED_PROVIDER}")
 
@@ -176,37 +252,33 @@ VEC_SQL = f"""
     ORDER BY {EMBED_COL} <=> %(qvec)s::vector
     LIMIT %(k)s
 """
-# <=> is the pgvector distance operator; with COSINE/HNSW index this is fast for ANN.
+# <=> is the pgvector cosine distance operator (with COSINE/HNSW index this is fast).
 
-# Simple lexical path via pg_trgm similarity (fast and easy to add). Enable extension + GIN index:
+# Simple lexical path via pg_trgm similarity:
 #   CREATE EXTENSION IF NOT EXISTS pg_trgm;
 #   CREATE INDEX IF NOT EXISTS code_chunks_text_gin ON codeindex__code_chunks USING GIN (text gin_trgm_ops);
-# (pg_trgm docs).
 LEX_SQL = f"""
     SELECT {ID_COL} AS id, file, lang, name, symbol_kind, header, body,
            similarity({TEXT_COL}, %(q)s) AS sim
     FROM {TABLE}
-    WHERE {TEXT_COL} % %(q)s
+    WHERE {TEXT_COL} %% %(q)s
     ORDER BY similarity({TEXT_COL}, %(q)s) DESC
     LIMIT %(k)s
 """
 
-# Neighbor expansion: pull more chunks that share file or names in deps/text
-# (minimal, pragmatic expansion — you can swap to your defs/refs graph when you persist it).
+# Neighbor expansion (lightweight): pull more chunks that share file or names in deps/text.
 EXPAND_SQL = f"""
-    SELECT c.{ID_COL} AS id, c.file, c.lang, c.name, c.symbol_kind, c.header, c.body
-    FROM {TABLE} c
-    WHERE c.file = ANY(%(files)s)
-       OR EXISTS (
-            SELECT 1
-            FROM {TABLE} d
-            WHERE d.{ID_COL} = ANY(%(seed_ids)s)
-              AND (c.text ILIKE '%%' || d.name || '%%' OR c.name = d.name)
-       )
+    SELECT {ID_COL} AS id, file, lang, name, symbol_kind, header, body
+    FROM {TABLE}
+    WHERE file = ANY(%(files)s)
+      AND {ID_COL} <> ALL(%(seed_ids)s)
     LIMIT %(limit)s
 """
 
 
+# -----------------------------
+# DB helpers
+# -----------------------------
 def _connect() -> psycopg.Connection:
     if not PG_DSN:
         raise RuntimeError("COCOINDEX_DATABASE_URL is not set.")
@@ -218,9 +290,14 @@ def _vec_hits(conn: psycopg.Connection, qvec: List[float], k: int) -> List[Hit]:
     rows = conn.execute(VEC_SQL, {"qvec": qvec, "k": k}).fetchall()
     return [
         Hit(
-            id=r["id"], score=float(r["sim"]), file=r.get("file"),
-            lang=r.get("lang"), name=r.get("name"), symbol_kind=r.get("symbol_kind"),
-            header=r.get("header"), body=r.get("body"),
+            id=r["id"],
+            score=float(r["sim"]),
+            file=r.get("file"),
+            lang=r.get("lang"),
+            name=r.get("name"),
+            symbol_kind=r.get("symbol_kind"),
+            header=r.get("header"),
+            body=r.get("body"),
         )
         for r in rows
     ]
@@ -230,22 +307,28 @@ def _lex_hits(conn: psycopg.Connection, q: str, k: int) -> List[Hit]:
     rows = conn.execute(LEX_SQL, {"q": q, "k": k}).fetchall()
     return [
         Hit(
-            id=r["id"], score=float(r["sim"]), file=r.get("file"),
-            lang=r.get("lang"), name=r.get("name"), symbol_kind=r.get("symbol_kind"),
-            header=r.get("header"), body=r.get("body"),
+            id=r["id"],
+            score=float(r["sim"]),
+            file=r.get("file"),
+            lang=r.get("lang"),
+            name=r.get("name"),
+            symbol_kind=r.get("symbol_kind"),
+            header=r.get("header"),
+            body=r.get("body"),
         )
         for r in rows
     ]
 
 
 def _merge_hits(vec: List[Hit], lex: List[Hit], k: int) -> List[Hit]:
-    # Normalize to [0,1], then RRF-style combine
-    def _norm(xs: List[float]) -> Dict[str, float]:
+    # Normalize both score streams to [0,1]-ish by min-max over the sample,
+    # then fuse with a simple weighted sum (RRF-ish behavior).
+    def _norm(xs: Iterable[float]) -> Dict[str, float]:
+        xs = list(xs)
         if not xs:
-            return {}
+            return {"_": 0.0, "lo": 0.0, "span": 1.0}
         lo, hi = min(xs), max(xs)
-        span = max(1e-6, hi - lo)
-        return {"_": 0.0, "lo": lo, "span": span}
+        return {"_": 0.0, "lo": lo, "span": max(1e-6, hi - lo)}
 
     vec_scores = {h.id: h.score for h in vec}
     lex_scores = {h.id: h.score for h in lex}
@@ -256,10 +339,9 @@ def _merge_hits(vec: List[Hit], lex: List[Hit], k: int) -> List[Hit]:
     all_ids = list({*vec_scores.keys(), *lex_scores.keys()})
     fused: Dict[str, float] = {}
 
-    for i, hid in enumerate(all_ids, start=1):
-        vs = (vec_scores.get(hid, 0.0) - vnorm.get("lo", 0.0)) / max(1e-6, vnorm.get("span", 1.0))
-        ls = (lex_scores.get(hid, 0.0) - lnorm.get("lo", 0.0)) / max(1e-6, lnorm.get("span", 1.0))
-        # RRF-ish: favor consensus; tweak weights to taste
+    for hid in all_ids:
+        vs = (vec_scores.get(hid, 0.0) - vnorm["lo"]) / vnorm["span"]
+        ls = (lex_scores.get(hid, 0.0) - lnorm["lo"]) / lnorm["span"]
         fused[hid] = 0.6 * vs + 0.4 * ls
 
     # reconstruct hits with the better metadata (prefer vec-row if available)
@@ -269,8 +351,19 @@ def _merge_hits(vec: List[Hit], lex: List[Hit], k: int) -> List[Hit]:
             meta[h.id] = h
 
     ranked = sorted(all_ids, key=lambda x: fused[x], reverse=True)[:k]
-    return [Hit(id=i, score=fused[i], file=meta[i].file, lang=meta[i].lang, name=meta[i].name,
-                symbol_kind=meta[i].symbol_kind, header=meta[i].header, body=meta[i].body) for i in ranked]
+    return [
+        Hit(
+            id=i,
+            score=fused[i],
+            file=meta[i].file,
+            lang=meta[i].lang,
+            name=meta[i].name,
+            symbol_kind=meta[i].symbol_kind,
+            header=meta[i].header,
+            body=meta[i].body,
+        )
+        for i in ranked
+    ]
 
 
 def _expand(conn: psycopg.Connection, seeds: List[Hit], limit: int) -> List[Hit]:
@@ -278,11 +371,23 @@ def _expand(conn: psycopg.Connection, seeds: List[Hit], limit: int) -> List[Hit]
         return []
     files = list({h.file for h in seeds if h.file})
     seed_ids = [h.id for h in seeds]
-    rows = conn.execute(EXPAND_SQL, {"files": files, "seed_ids": seed_ids, "limit": limit}).fetchall()
+    rows = conn.execute(
+        EXPAND_SQL, {"files": files, "seed_ids": seed_ids, "limit": limit}
+    ).fetchall()
+
     extra: List[Hit] = [
-        Hit(id=r["id"], score=0.0, file=r.get("file"), lang=r.get("lang"), name=r.get("name"),
-            symbol_kind=r.get("symbol_kind"), header=r.get("header"), body=r.get("body"))
-        for r in rows if r["id"] not in seed_ids
+        Hit(
+            id=r["id"],
+            score=0.0,
+            file=r.get("file"),
+            lang=r.get("lang"),
+            name=r.get("name"),
+            symbol_kind=r.get("symbol_kind"),
+            header=r.get("header"),
+            body=r.get("body"),
+        )
+        for r in rows
+        if r["id"] not in seed_ids
     ]
     # Keep order as seeds first, then extras
     return seeds + extra
@@ -291,13 +396,28 @@ def _expand(conn: psycopg.Connection, seeds: List[Hit], limit: int) -> List[Hit]
 def _maybe_rerank(query_text: str, hits: List[Hit], topn: int = 100) -> List[Hit]:
     if not ENABLE_RERANK or not hits:
         return hits
-    rer = _lazy_init_reranker()
     pool = hits[:topn]
-    pairs = [(query_text, (h.header or "") + "\n" + (h.body or "")) for h in pool]
-    # FlagEmbedding inference returns relevance scores (higher = better).
-    scores = rer.compute_score(pairs, normalize=True)
-    rescored = [Hit(**{**h.__dict__, "score": float(s)}) for h, s in zip(pool, scores)]
-    return sorted(rescored, key=lambda x: x.score, reverse=True)
+    texts = [(h.header or "") + "\n" + (h.body or "") for h in pool]
+    if RERANK_PROVIDER == "voyage":
+        try:
+            idx_scores = _voyage_rerank_http(query_text, texts, model=RERANK_MODEL)
+            scored = [(pool[i], s) for (i, s) in idx_scores]
+            # Already sorted by relevance desc
+            return [Hit(**{**h.__dict__, "score": float(s)}) for (h, s) in scored]
+        except Exception as e:
+            print("[WARN] Voyage rerank failed:", e)
+            return pool
+    else:
+        # default "flag" (BGE CrossEncoder via FlagEmbedding)
+        try:
+            rer = _lazy_init_reranker()
+        except Exception as e:
+            print("[WARN] FlagEmbedding reranker unavailable:", e)
+            return pool
+        pairs = [(query_text, t) for t in texts]
+        scores = rer.compute_score(pairs, normalize=True)
+        rescored = [Hit(**{**h.__dict__, "score": float(s)}) for h, s in zip(pool, scores)]
+        return sorted(rescored, key=lambda x: x.score, reverse=True)
 
 
 def search_repo(
@@ -311,14 +431,14 @@ def search_repo(
 ) -> List[Hit]:
     """
     Two modes:
-      - mode="nl": natural language task (uses BGE query instruction; Voyage plain).
-      - mode="code": code-anchor snippet (no instruction).
+      - mode="nl": natural language task (uses BGE query instruction; Voyage input_type='query').
+      - mode="code": code-anchor snippet (no instruction; Voyage input_type='document').
     Pipeline:
       1) embed query
       2) vector ANN via pgvector(HNSW)
       3) lexical via pg_trgm (hybrid recall)
       4) fuse -> optional neighbor expansion
-      5) optional rerank with bge-reranker-v2-m3
+      5) optional rerank (BGE FlagEmbedding or Voyage REST)
     """
     qvec = _embed_nl_query(query) if mode == "nl" else _embed_code_anchor(query)
 

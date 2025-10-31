@@ -23,6 +23,7 @@ dependencies = [
   # --- Embedding / Reranking ---
   "sentence-transformers>=3.0.1",
   "FlagEmbedding>=1.2.10",
+  "voyageai>=0.3.5",
   # torch CPU is fine; MPS (Apple Silicon) or CUDA will accelerate drastically
   "torch>=2.3",
   # QWEN THING ENDS
