@@ -12,6 +12,17 @@ from psycopg_pool import ConnectionPool
 from .pagerank_update import update_pagerank
 import numpy as np
 from numpy.typing import NDArray
+import os, re
+
+def _slug(s: str | None) -> str:
+    # fall back to a stable default if None/empty
+    if not s:
+        s = "default"
+    s = re.sub(r'[^a-zA-Z0-9_]+', '_', s).strip('_').lower()
+    # schemas cannot start with a digit; also handle empty after cleaning
+    if not s or s[0].isdigit():
+        s = f"r_{s}"
+    return s
 
 # Embedding set-up (one active model -> one column)
 # -------------------------------------------------------------------------------------------------
@@ -67,6 +78,10 @@ def embed_with_voyage(
 @cocoindex.flow_def(name="CodeIndex")
 def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     root_dir = os.getenv("CODEAGENT_ROOT", os.getcwd())
+    # derive repo name if not provided
+    repo_name = os.getenv("CODEAGENT_REPO") or os.path.basename(root_dir)
+    schema = os.getenv("CODEAGENT_SCHEMA") or _slug(repo_name)
+
     data_scope["files"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(
             path=root_dir,
@@ -171,18 +186,32 @@ def build_index(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataS
 
     out.export(
         "code_chunks",
-        cocoindex.targets.Postgres(),
+        cocoindex.targets.Postgres(
+            table_name="code_chunks",  # stable across repos
+            schema=schema  # <- isolates by schema
+        ),
         primary_key_fields=["id"],
-        vector_indexes=[
-            # cocoindex.VectorIndexDef(
-            #     field_name="embedding",
-            #     metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            # ),
-            # cocoindex.VectorIndexDef(
-            #     field_name="summary_embedding",
-            #     metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            # ),
-            embedding_def
+        vector_indexes=[embedding_def],
+        attachments=[
+            # ensure schema exists before we try to create indexes in it
+            cocoindex.targets.PostgresSqlCommand(
+                name="ensure_schema",
+                setup_sql=(f"CREATE SCHEMA IF NOT EXISTS {schema};")
+            ),
+            # Example: extra helpers (GIN trigram) for lexical speed
+            cocoindex.targets.PostgresSqlCommand(
+                name="lexical",
+                setup_sql=(
+                    "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+                    f"CREATE INDEX IF NOT EXISTS {schema}_cc_header_trgm "
+                    f"ON {schema}.code_chunks USING GIN (header gin_trgm_ops);"
+                    f"CREATE INDEX IF NOT EXISTS {schema}_cc_body_trgm "
+                    f"ON {schema}.code_chunks USING GIN (body gin_trgm_ops);"
+                    f"CREATE INDEX IF NOT EXISTS {schema}_cc_text_trgm "
+                    f"ON {schema}.code_chunks USING GIN (text gin_trgm_ops);"
+
+                ),
+            ),
         ],
     )
 
@@ -198,8 +227,10 @@ def run_index():
     if db_url:
         try:
             pool = ConnectionPool(db_url)
-            # Resolve the table name for this build_index target
-            table = cx_utils.get_target_default_name(build_index, "code_chunks")
+            root_dir = os.getenv("CODEAGENT_ROOT", os.getcwd())
+            repo_name = os.getenv("CODEAGENT_REPO") or os.path.basename(root_dir)
+            schema = os.getenv("CODEAGENT_SCHEMA") or _slug(repo_name)
+            table = f"{schema}.code_chunks"
             touched = update_pagerank(pool, table)
             print(f"Updated PageRank on {touched} chunk rows.")
 

@@ -61,9 +61,23 @@ VOYAGE_TIMEOUT = float(os.getenv("VOYAGE_TIMEOUT", "60"))  # seconds
 
 # DB
 PG_DSN = os.getenv("COCOINDEX_DATABASE_URL")
-TABLE = os.getenv("RETRIEVER_TABLE", "codeindex__code_chunks")  # your existing table
-EMBED_COL = os.getenv("RETRIEVER_EMBED_COL", "embedding")        # single embed column
-TEXT_COL = os.getenv("RETRIEVER_TEXT_COL", "text")               # used for lexical + rerank
+
+def _slug_schema(name: Optional[str]) -> str:
+    import re
+    s = (name or "default")
+    s = re.sub(r'[^a-zA-Z0-9_]+', '_', s).strip('_').lower()
+    if not s or s[0].isdigit():
+        s = f"r_{s}"
+    return s
+
+_DEFAULT_SCHEMA = (
+    os.getenv("CODEAGENT_SCHEMA")
+    or _slug_schema(os.getenv("CODEAGENT_REPO")
+                    or os.path.basename(os.getenv("CODEAGENT_ROOT", "")) or "default")
+)
+TABLE = os.getenv("RETRIEVER_TABLE") or f"{_DEFAULT_SCHEMA}.code_chunks"
+EMBED_COL = os.getenv("RETRIEVER_EMBED_COL", "embedding")
+TEXT_COL = os.getenv("RETRIEVER_TEXT_COL", "text")
 ID_COL = os.getenv("RETRIEVER_ID_COL", "id")
 
 # Hybrid recall knobs

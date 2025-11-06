@@ -46,6 +46,13 @@ except Exception:
     except Exception:
         pass
 
+def _slug_schema(name: str) -> str:
+    import re
+    s = re.sub(r'[^a-zA-Z0-9_]+', '_', name).strip('_').lower()
+    if not s or s[0].isdigit():
+        s = f"r_{s}"
+    return s
+
 # retriever (prefer the new `search_repo` name; fall back to `search`)
 def _resolve_search_func():
     # pkg path
@@ -127,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     q = sub.add_parser("query", help="Hybrid search over codebase (vector + lexical) with optional rerank.")
     q.add_argument("--q", "--query", dest="query", required=True, help="Query string (NL) or code snippet (use --mode code).")
     q.add_argument("-k", "--topk", type=int, default=20, help="How many final results to print.")
+    q.add_argument("--repo", help="Repository name (maps to Postgres schema).")
+
 
     # Retrieval & rerank options
     rgrp = q.add_argument_group("retrieval & rerank options")
@@ -172,6 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ---------------- pagerank ----------------
     pr = sub.add_parser("pagerank", help="Update PageRank and print top files/symbols.")
     pr.add_argument("--topn", type=int, default=20, help="How many to print from the top lists.")
+    pr.add_argument("--repo", help="Repository name (maps to Postgres schema).")
+    pr.add_argument("--root", help="Repo root (overrides CODEAGENT_ROOT).")
 
     return p
 
@@ -182,6 +193,11 @@ def _apply_env_from_args(args: argparse.Namespace) -> None:
     (retriever.py) don't need argparse imports.
     """
     # Retrieval/rerank env switches
+    if getattr(args, "repo", None):
+        os.environ["CODEAGENT_REPO"] = args.repo
+        os.environ.setdefault("CODEAGENT_SCHEMA", _slug_schema(args.repo))
+    if getattr(args, "root", None):
+        os.environ["CODEAGENT_ROOT"] = args.root
     if getattr(args, "mode", None):
         os.environ["RETRIEVER_MODE"] = args.mode
     if getattr(args, "embed_provider", None):
@@ -267,14 +283,18 @@ def cmd_index(args: argparse.Namespace) -> int:
 
 
 def cmd_pagerank(args: argparse.Namespace) -> int:
+    import re, os
     load_dotenv()
+    _apply_env_from_args(args)
     if update_pagerank is None or top_files_and_symbols is None:
         print("PageRank utilities are not available in this environment.", file=sys.stderr)
         return 2
 
     db_url = os.environ["COCOINDEX_DATABASE_URL"]
     pool = ConnectionPool(db_url)
-    table = cx_utils.get_target_default_name(build_index, "code_chunks")
+    repo = os.getenv("CODEAGENT_REPO") or "default"
+    schema = os.getenv("CODEAGENT_SCHEMA") or re.sub(r'[^a-zA-Z0-9_]+', '_', f"r_{repo}").lower()
+    table = f'{schema}.code_chunks'  # we set this explicitly in flow.py
 
     # recompute + print
     update_pagerank(pool, table)
