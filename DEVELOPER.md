@@ -1,15 +1,24 @@
 # index
-export CODEAGENT_ROOT=/Users/mustafaacar/retter/shortlink                                                                                           4663ms  14:51:51
+export CODEAGENT_ROOT=/Users/mustafaacar/retter/shortlink
 export CODEAGENT_REPO=shortlink 
 codeagent index
 
+# index
+export CODEAGENT_ROOT=/Users/mustafaacar/retter/unifree-lcs
+export CODEAGENT_REPO=unifree-lcs
+codeagent index
+
 # query 
- codeagent query --q "handleStaticLinkData(" --mode code -k 10 \                                                                                     4663ms  14:51:51
+ codeagent query --q "handleStaticLinkData(" --mode code -k 10 \
         --rerank --rerank-provider voyage --rerank-model rerank-2.5-lite \
         --repo shortlink
 
+ codeagent query --q "generateVariations(" --mode code -k 10 \
+        --rerank --rerank-provider voyage --rerank-model rerank-2.5-lite \
+        --repo unifree-lcs
 
-# pagerank 
+
+# pagerank
 codeagent pagerank --topn 30 --repo shortlink
 
 
