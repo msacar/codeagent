@@ -3,17 +3,15 @@ from __future__ import annotations
 import os
 import sys
 import argparse
-from typing import List, Optional, Literal
 
 from dotenv import load_dotenv
 load_dotenv()
 
-# Optional dependencies used by other subcommands (indexing, etc.)
-try:
-    from psycopg_pool import ConnectionPool  # noqa: F401
-    from pgvector.psycopg import register_vector  # noqa: F401
-except Exception:
-    pass
+from typing import List, Optional, Literal
+from cocoindex import utils as cx_utils
+
+from psycopg_pool import ConnectionPool  # noqa: F401
+from pgvector.psycopg import register_vector  # noqa: F401
 
 # --- Best-effort imports to match your project layout -------------------------
 # We try the package (e.g., yourpkg.cli run as module) first, then local files.
@@ -273,16 +271,23 @@ def cmd_pagerank(args: argparse.Namespace) -> int:
     if update_pagerank is None or top_files_and_symbols is None:
         print("PageRank utilities are not available in this environment.", file=sys.stderr)
         return 2
-    update_pagerank()
-    files, symbols = top_files_and_symbols(topn=args.topn)
+
+    db_url = os.environ["COCOINDEX_DATABASE_URL"]
+    pool = ConnectionPool(db_url)
+    table = cx_utils.get_target_default_name(build_index, "code_chunks")
+
+    # recompute + print
+    update_pagerank(pool, table)
+    files, symbols = top_files_and_symbols(pool, table, top_n=args.topn)
+
     print("\nTop files by PageRank:")
     for i, (f, score) in enumerate(files, 1):
         print(f"{i:>2}. {f} — {score:.5f}")
-    print("\nTop symbols by PageRank:")
-    for i, (s, score) in enumerate(symbols, 1):
-        print(f"{i:>2}. {s} — {score:.5f}")
-    return 0
 
+    print("\nTop symbols by PageRank:")
+    for i, (name, f, score) in enumerate(symbols, 1):
+        print(f"{i:>2}. {name} @ {f} — {score:.5f}")
+    return 0
 
 def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv()
